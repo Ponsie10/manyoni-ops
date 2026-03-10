@@ -403,7 +403,7 @@ const state = {
   showNewChem: false, showLogWork: false, showChemUse: false,
   showCostEntry: false, showStockItem: false, showStockIn: false,
   showStockOut: false, showOpCost: false, showSupplier: false,
-  selectedTask: null, selectedChem: null, selectedStock: null,
+  selectedTask: null, selectedChem: null, selectedStock: null, editingStockId: null,
   taskFilter: 'all', assetFilter: 'all', costCatFilter: '', stockCatFilter: 'all',
   stockSearch: '',
   toasts: [],
@@ -550,6 +550,9 @@ CREATE TABLE IF NOT EXISTS stock_items (
   minimum_level NUMERIC DEFAULT 0,
   current_unit_cost NUMERIC DEFAULT 0,
   storage_location TEXT,
+  hazard_class TEXT,
+  ppe_required TEXT,
+  sds_ref TEXT,
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -738,6 +741,14 @@ async function createStockItem(data) {
   } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
 }
 
+async function updateStockItem(id, data) {
+  try {
+    await sb.patch('stock_items?id=eq.'+id, data);
+    toast('Item updated');
+    await loadStockItems();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
+}
+
 async function createSupplier(data) {
   try {
     await sb.post('suppliers', data);
@@ -880,7 +891,6 @@ function buildSidebar() {
     { id:'tasks', icon:'◫', label:'Tasks' },
     { id:'assets', icon:'◧', label:'Assets' },
     { id:'environment', icon:'◉', label:'Ecology' },
-    { id:'chemicals', icon:'◎', label:'Chemicals' },
     { id:'stock', icon:'◱', label:'Stock' },
     { id:'costs', icon:'◈', label:'Costs' },
     { id:'reports', icon:'◰', label:'Reports' },
@@ -901,6 +911,10 @@ function buildSidebar() {
           <span>${n.label}</span>
         </button>
       `).join('')}
+      <button class="nav-btn ${state.page==='stock' && state.stockCatFilter==='chemicals' ? 'active' : ''}" onclick="navigate('stock');setStockFilter('chemicals')" style="padding-left:28px;font-size:12px;color:var(--text-muted)">
+        <span class="nav-icon" style="font-size:11px">◎</span>
+        <span>Chemicals</span>
+      </button>
     </nav>
     <div class="sidebar-footer">
       <div style="margin-bottom:4px"><span class="status-dot"></span>Connected · Supabase</div>
@@ -926,7 +940,8 @@ function buildTopbar() {
 }
 
 function buildPage() {
-  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: buildAssets, environment: buildEcology, chemicals: buildChemicals, stock: buildStock, costs: buildCosts, reports: buildReports };
+  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: buildAssets, environment: buildEcology, stock: buildStock, costs: buildCosts, reports: buildReports };
+  if (state.page === 'chemicals') { state.page = 'stock'; state.stockCatFilter = 'chemicals'; }
   return (pages[state.page] || buildDashboard)();
 }
 
@@ -1399,6 +1414,9 @@ function buildStock() {
                 <span>Total in: ${totalIn} ${s.unit}</span>
                 <span>Total out: ${totalOut} ${s.unit}</span>
                 ${estValue > 0 ? `<span style="color:var(--savanna)">Value: R${estValue.toLocaleString('en-ZA',{maximumFractionDigits:0})}</span>` : ''}
+                ${s.hazard_class ? `<span style="color:var(--red)">&#9888; ${escHtml(s.hazard_class)}</span>` : ''}
+                ${s.ppe_required ? `<span style="color:var(--orange)">PPE: ${escHtml(s.ppe_required)}</span>` : ''}
+                ${s.sds_ref ? `<span>SDS: ${escHtml(s.sds_ref)}</span>` : ''}
               </div>
             </div>
             <div style="text-align:right;flex-shrink:0;margin-left:12px">
@@ -1412,6 +1430,7 @@ function buildStock() {
           <div style="display:flex;gap:6px">
             <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="openStockIn(${s.id})">+ Receive</button>
             <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="openStockOut(${s.id})">&#8722; Issue</button>
+            <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px;margin-left:auto" onclick="openEditStock(${s.id})">&#9998; Edit</button>
           </div>
         </div>`;
       }).join('') : `<div class="empty card">No stock items ${state.stockCatFilter!=='all'?'in this category ':''}&mdash; click New Item to add</div>`}
@@ -1911,65 +1930,75 @@ function buildLogWorkModal() {
 }
 
 function buildStockItemModal() {
+  const editing = state.editingStockId ? state.stockItems.find(s => s.id === state.editingStockId) : null;
+  const v = (id, fallback='') => editing ? (editing[id] !== null && editing[id] !== undefined ? editing[id] : fallback) : fallback;
+  const title = editing ? '&#9998; Edit Stock Item' : '&#9701; New Stock Item';
   return `
   <div class="modal-overlay" onclick="if(event.target===this)closeModal('stockItem')">
-    <div class="modal" style="width:560px">
-      <div class="modal-title">&#9701; New Stock Item</div>
+    <div class="modal" style="width:580px;max-height:90vh;overflow-y:auto">
+      <div class="modal-title">${title}</div>
       <div class="form-row">
         <div class="form-group" style="flex:2"><label class="form-label">Item Name *</label>
-          <input class="form-input" id="si-name" placeholder="e.g. Diesel, 25A Circuit Breaker, PVA Paint 20L" value="${escHtml(state.stockSearch||'')}">
+          <input class="form-input" id="si-name" placeholder="e.g. Diesel, 25A Breaker, PVA Paint 20L" value="${escHtml(editing ? v('name') : (state.stockSearch||''))}">
         </div>
         <div class="form-group"><label class="form-label">Supplier Item ID</label>
-          <input class="form-input" id="si-sid" placeholder="Code on supplier slip">
+          <input class="form-input" id="si-sid" placeholder="Code on supplier slip" value="${escHtml(v('supplier_item_id'))}">
         </div>
       </div>
       <div class="form-row">
         <div class="form-group"><label class="form-label">Category *</label>
           <select class="form-select" id="si-cat">
-            <option value="chemicals">Chemicals</option>
-            <option value="fuel">Fuel</option>
-            <option value="vehicle_generator_spares">Vehicle & Generator Spares</option>
-            <option value="electrical">Electrical</option>
-            <option value="plumbing">Plumbing</option>
-            <option value="paints_varnish">Paints & Varnish</option>
-            <option value="general_consumables">General Consumables</option>
+            ${['chemicals','fuel','vehicle_generator_spares','electrical','plumbing','paints_varnish','general_consumables'].map(cat => {
+              const labels = {chemicals:'Chemicals',fuel:'Fuel',vehicle_generator_spares:'Vehicle & Generator Spares',electrical:'Electrical',plumbing:'Plumbing',paints_varnish:'Paints & Varnish',general_consumables:'General Consumables'};
+              return `<option value="${cat}" ${v('category')===cat?'selected':''}>${labels[cat]}</option>`;
+            }).join('')}
           </select>
         </div>
         <div class="form-group"><label class="form-label">Unit</label>
           <select class="form-select" id="si-unit">
-            <option value="L">Litres (L)</option>
-            <option value="kg">Kilograms (kg)</option>
-            <option value="m">Metres (m)</option>
-            <option value="unit">Unit / Each</option>
-            <option value="box">Box</option>
-            <option value="roll">Roll</option>
-            <option value="bag">Bag</option>
-            <option value="tin">Tin</option>
-            <option value="pair">Pair</option>
+            ${['L','kg','m','unit','box','roll','bag','tin','pair'].map(u => `<option value="${u}" ${v('unit','unit')===u?'selected':''}>${u}</option>`).join('')}
           </select>
         </div>
       </div>
       <div class="form-row">
         <div class="form-group"><label class="form-label">Minimum Level</label>
-          <input class="form-input" id="si-min" type="number" step="0.1" value="0" placeholder="0">
+          <input class="form-input" id="si-min" type="number" step="0.1" value="${v('minimum_level',0)}" placeholder="0">
         </div>
-        <div class="form-group"><label class="form-label">Opening Stock</label>
-          <input class="form-input" id="si-stock" type="number" step="0.1" value="0" placeholder="0">
+        <div class="form-group"><label class="form-label">${editing ? 'Stock Level' : 'Opening Stock'}</label>
+          <input class="form-input" id="si-stock" type="number" step="0.1" value="${v('stock_level',0)}" placeholder="0">
         </div>
         <div class="form-group"><label class="form-label">Current Cost (R/unit)</label>
-          <input class="form-input" id="si-cost" type="number" step="0.01" placeholder="0.00">
+          <input class="form-input" id="si-cost" type="number" step="0.01" value="${v('current_unit_cost','')||''}" placeholder="0.00">
         </div>
       </div>
       <div class="form-group"><label class="form-label">Storage Location</label>
-        <input class="form-input" id="si-loc" placeholder="e.g. Chemical store, Workshop storeroom">
+        <input class="form-input" id="si-loc" placeholder="e.g. Chemical store, Workshop storeroom" value="${escHtml(v('storage_location'))}">
+      </div>
+      <div style="border-top:1px solid var(--border);margin:14px 0 12px;padding-top:12px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">SAFETY / HAZARD INFO (optional — applicable to all item types)</div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Hazard Class</label>
+            <input class="form-input" id="si-hazard" placeholder="e.g. Flammable, Corrosive, Toxic" value="${escHtml(v('hazard_class'))}">
+          </div>
+          <div class="form-group"><label class="form-label">SDS / Safety Ref</label>
+            <input class="form-input" id="si-sds" placeholder="SDS doc ref or location" value="${escHtml(v('sds_ref'))}">
+          </div>
+        </div>
+        <div class="form-group"><label class="form-label">PPE Required</label>
+          <input class="form-input" id="si-ppe" placeholder="e.g. Gloves, goggles, respirator, face shield" value="${escHtml(v('ppe_required'))}">
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Notes</label>
+        <input class="form-input" id="si-notes" placeholder="Any additional notes..." value="${escHtml(v('notes'))}">
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
         <button class="btn btn-ghost" onclick="closeModal('stockItem')">Cancel</button>
-        <button class="btn btn-primary" onclick="submitStockItem()">Create Item</button>
+        <button class="btn btn-primary" onclick="submitStockItem()">${editing ? 'Save Changes' : 'Create Item'}</button>
       </div>
     </div>
   </div>`;
 }
+
 
 function buildSupplierModal() {
   return `
@@ -2315,7 +2344,7 @@ window.closeModal = (name) => {
   if(name==='chemUse') { state.showChemUse = false; state.selectedChem = null; }
   if(name==='stockAdjust') { state.showStockAdjust = false; state.selectedChem = null; }
   if(name==='costEntry') state.showCostEntry = false;
-  if(name==='stockItem') state.showStockItem = false;
+  if(name==='stockItem') { state.showStockItem = false; state.editingStockId = null; }
   if(name==='stockIn') { state.showStockIn = false; state.selectedStock = null; }
   if(name==='stockOut') { state.showStockOut = false; state.selectedStock = null; }
   if(name==='opCost') state.showOpCost = false;
@@ -2328,6 +2357,7 @@ window.updateStatus = async (id, status) => { await updateTaskStatus(id, status)
 
 window.openChemUse = (chemId) => { state.selectedChem = chemId; state.showChemUse = true; render(); };
 window.openStockIn  = (id) => { state.selectedStock = id; state.showStockIn = true; render(); };
+window.openEditStock = (id) => { state.editingStockId = id; state.showStockItem = true; render(); };
 window.openStockOut = (id) => { state.selectedStock = id; state.showStockOut = true; render(); };
 window.setStockFilter = (cat) => { state.stockCatFilter = cat; render(); };
 window.doStockSearch = (val) => { state.stockSearch = val; render(); setTimeout(()=>{ const el=document.getElementById('stock-search'); if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);} },10); };
@@ -2337,7 +2367,7 @@ window.calcStockInTotal = () => { const q=Number(document.getElementById('sin-qt
 window.submitStockItem = async () => {
   const name = document.getElementById('si-name')?.value?.trim();
   if (!name) { toast('Item name required','error'); return; }
-  await createStockItem({
+  const data = {
     name,
     supplier_item_id: document.getElementById('si-sid')?.value || null,
     category: document.getElementById('si-cat')?.value,
@@ -2346,8 +2376,17 @@ window.submitStockItem = async () => {
     stock_level: document.getElementById('si-stock')?.value || 0,
     current_unit_cost: document.getElementById('si-cost')?.value || 0,
     storage_location: document.getElementById('si-loc')?.value || null,
-  });
-  state.showStockItem = false; state.stockSearch = ''; render();
+    hazard_class: document.getElementById('si-hazard')?.value || null,
+    ppe_required: document.getElementById('si-ppe')?.value || null,
+    sds_ref: document.getElementById('si-sds')?.value || null,
+    notes: document.getElementById('si-notes')?.value || null,
+  };
+  if (state.editingStockId) {
+    await updateStockItem(state.editingStockId, data);
+  } else {
+    await createStockItem(data);
+  }
+  state.showStockItem = false; state.editingStockId = null; state.stockSearch = ''; render();
 };
 
 window.submitSupplier = async () => {
