@@ -402,7 +402,7 @@ const state = {
   showNewTask: false, showNewAsset: false, showNewObs: false,
   showNewChem: false, showLogWork: false, showChemUse: false,
   showCostEntry: false, showStockItem: false, showStockIn: false,
-  showStockOut: false, showOpCost: false, showSupplier: false,
+  showStockOut: false, showOpCost: false, showSupplier: false, showStocktake: false,
   selectedTask: null, selectedChem: null, selectedStock: null, editingStockId: null,
   taskFilter: 'all', assetFilter: 'all', costCatFilter: '', stockCatFilter: 'all',
   stockSearch: '',
@@ -862,6 +862,7 @@ function buildApp() {
   ${state.showStockOut ? buildStockOutModal() : ''}
   ${state.showOpCost ? buildOpCostModal() : ''}
   ${state.showSupplier ? buildSupplierModal() : ''}
+  ${state.showStocktake ? buildStocktakeModal() : ''}
   ${state.selectedTask ? buildTaskDetail() : ''}
   `;
 }
@@ -1307,6 +1308,7 @@ function buildStock() {
         <button class="btn btn-ghost" onclick="showModal('supplier')">+ Supplier</button>
         <button class="btn btn-ghost" onclick="showModal('stockOut')">Issue Stock</button>
         <button class="btn btn-ghost" onclick="showModal('stockIn')">Receive Delivery</button>
+        <button class="btn btn-ghost" onclick="showModal('stocktake')">&#9633; Stock Take</button>
         <button class="btn btn-primary" onclick="showModal('stockIn')">+ New Item</button>
       </div>
     </div>
@@ -1927,6 +1929,102 @@ function buildLogWorkModal() {
   </div>`;
 }
 
+function buildStocktakeModal() {
+  const CAT_LABELS = {chemicals:'Chemicals',fuel:'Fuel',vehicle_generator_spares:'Vehicle & Generator Spares',electrical:'Electrical',plumbing:'Plumbing',paints_varnish:'Paints & Varnish',general_consumables:'General Consumables'};
+  const catOpts = Object.entries(CAT_LABELS).map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
+  const unitOpts = ['L','kg','m','unit','box','roll','bag','tin','pair'].map(u=>`<option value="${u}">${u}</option>`).join('');
+  const supplierOpts = '<option value="">— Supplier —</option>' + state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
+  const today = new Date().toISOString().slice(0,10);
+
+  // Build table rows — existing stock items pre-populated, plus 5 blank rows
+  const existingRows = state.stockItems.map((s,i) => `
+    <tr data-row="${i}" class="st-row">
+      <td><input class="st-input" data-field="name" value="${escHtml(s.name)}" placeholder="Item name"></td>
+      <td><input class="st-input st-narrow" data-field="supplier_item_id" value="${escHtml(s.supplier_item_id||'')}" placeholder="ID"></td>
+      <td><select class="st-select" data-field="category">${Object.entries(CAT_LABELS).map(([v,l])=>`<option value="${v}" ${s.category===v?'selected':''}>${l}</option>`).join('')}</select></td>
+      <td><select class="st-select st-narrow" data-field="unit">${['L','kg','m','unit','box','roll','bag','tin','pair'].map(u=>`<option value="${u}" ${s.unit===u?'selected':''}>${u}</option>`).join('')}</select></td>
+      <td><input class="st-input st-narrow" data-field="stock_level" type="number" step="0.01" value="${s.stock_level}" placeholder="0"></td>
+      <td><input class="st-input st-narrow" data-field="minimum_level" type="number" step="0.01" value="${s.minimum_level}" placeholder="0"></td>
+      <td><input class="st-input st-narrow" data-field="current_unit_cost" type="number" step="0.01" value="${Number(s.current_unit_cost||0).toFixed(2)}" placeholder="0.00"></td>
+      <td><select class="st-select" data-field="supplier_id">${supplierOpts.replace(`value="${s.preferred_supplier_id||''}"`,`value="${s.preferred_supplier_id||''}" selected`)}</select></td>
+      <td><input class="st-input st-narrow" data-field="storage_location" value="${escHtml(s.storage_location||'')}" placeholder="Location"></td>
+      <td style="text-align:center"><input type="hidden" data-field="existing_id" value="${s.id}"><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--green)">existing</span></td>
+    </tr>`).join('');
+
+  const blankRows = Array.from({length:6},(_,i) => `
+    <tr data-row="${state.stockItems.length+i}" class="st-row">
+      <td><input class="st-input" data-field="name" placeholder="Item name"></td>
+      <td><input class="st-input st-narrow" data-field="supplier_item_id" placeholder="ID"></td>
+      <td><select class="st-select" data-field="category">${catOpts}</select></td>
+      <td><select class="st-select st-narrow" data-field="unit">${unitOpts}</select></td>
+      <td><input class="st-input st-narrow" data-field="stock_level" type="number" step="0.01" placeholder="0"></td>
+      <td><input class="st-input st-narrow" data-field="minimum_level" type="number" step="0.01" placeholder="0"></td>
+      <td><input class="st-input st-narrow" data-field="current_unit_cost" type="number" step="0.01" placeholder="0.00"></td>
+      <td><select class="st-select" data-field="supplier_id">${supplierOpts}</select></td>
+      <td><input class="st-input st-narrow" data-field="storage_location" placeholder="Location"></td>
+      <td style="text-align:center"><input type="hidden" data-field="existing_id" value=""><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">new</span></td>
+    </tr>`).join('');
+
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal('stocktake')">
+    <div class="modal" style="width:min(98vw,1100px);max-height:92vh;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;flex-shrink:0">
+        <div>
+          <div class="modal-title" style="margin-bottom:2px">&#9633; Stock Take — ${today}</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">
+            Existing items pre-filled. Edit any field. Add new items in blank rows. Tab to move between cells.
+          </div>
+        </div>
+        <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px;flex-shrink:0" onclick="addStocktakeRow()">+ Add Row</button>
+      </div>
+
+      <div style="overflow:auto;flex:1;margin:10px 0">
+        <style>
+          .st-table { width:100%;border-collapse:collapse;font-size:12px }
+          .st-table th { font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:1px;color:var(--text-muted);padding:6px 8px;text-align:left;background:var(--surface);border-bottom:2px solid var(--border);white-space:nowrap;position:sticky;top:0;z-index:1 }
+          .st-table td { padding:3px 4px;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent);vertical-align:middle }
+          .st-row:hover td { background:color-mix(in srgb,var(--accent) 4%,transparent) }
+          .st-input { background:var(--surface);border:1px solid transparent;border-radius:4px;padding:5px 7px;color:var(--text);font-size:12px;width:100%;min-width:0;box-sizing:border-box }
+          .st-input:focus { border-color:var(--accent);outline:none;background:var(--dark-mid) }
+          .st-input.st-narrow { min-width:60px }
+          .st-select { background:var(--surface);border:1px solid transparent;border-radius:4px;padding:5px 4px;color:var(--text);font-size:11px;width:100%;min-width:0 }
+          .st-select:focus { border-color:var(--accent);outline:none }
+        </style>
+        <table class="st-table" id="stocktake-table">
+          <thead>
+            <tr>
+              <th>ITEM NAME</th>
+              <th>SUPPLIER ID</th>
+              <th>CATEGORY</th>
+              <th>UNIT</th>
+              <th>QTY ON HAND</th>
+              <th>MIN LEVEL</th>
+              <th>UNIT COST (R)</th>
+              <th>SUPPLIER</th>
+              <th>LOCATION</th>
+              <th>STATUS</th>
+            </tr>
+          </thead>
+          <tbody id="stocktake-body">
+            ${existingRows}
+            ${blankRows}
+          </tbody>
+        </table>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;padding-top:10px;border-top:1px solid var(--border);flex-shrink:0">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">
+          Only rows with an item name will be saved. Existing items will be updated. New items will be created.
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" onclick="closeModal('stocktake')">Cancel</button>
+          <button class="btn btn-primary" id="st-save-btn" onclick="submitStocktake()">Save Stock Take</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
 function buildStockItemModal() {
   const editing = state.editingStockId ? state.stockItems.find(s => s.id === state.editingStockId) : null;
   const v = (id, fallback='') => editing ? (editing[id] !== null && editing[id] !== undefined ? editing[id] : fallback) : fallback;
@@ -2388,6 +2486,7 @@ window.showModal = (name) => {
   if(name==='stockOut') { state.showStockOut = true; }
   if(name==='opCost') state.showOpCost = true;
   if(name==='supplier') state.showSupplier = true;
+  if(name==='stocktake') { state.showStocktake = true; }
   render();
 };
 window.closeModal = (name) => {
@@ -2404,6 +2503,7 @@ window.closeModal = (name) => {
   if(name==='stockOut') { state.showStockOut = false; state.selectedStock = null; }
   if(name==='opCost') state.showOpCost = false;
   if(name==='supplier') state.showSupplier = false;
+  if(name==='stocktake') state.showStocktake = false;
   render();
 };
 window.openTask = (id) => { state.selectedTask = id; render(); };
@@ -2411,6 +2511,78 @@ window.closeTask = () => { state.selectedTask = null; render(); };
 window.updateStatus = async (id, status) => { await updateTaskStatus(id, status); };
 
 window.openChemUse = (chemId) => { state.selectedChem = chemId; state.showChemUse = true; render(); };
+
+window.addStocktakeRow = () => {
+  const CAT_LABELS = {chemicals:'Chemicals',fuel:'Fuel',vehicle_generator_spares:'Vehicle & Generator Spares',electrical:'Electrical',plumbing:'Plumbing',paints_varnish:'Paints & Varnish',general_consumables:'General Consumables'};
+  const catOpts = Object.entries(CAT_LABELS).map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
+  const unitOpts = ['L','kg','m','unit','box','roll','bag','tin','pair'].map(u=>`<option value="${u}">${u}</option>`).join('');
+  const supplierOpts = '<option value="">— Supplier —</option>' + state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
+  const tbody = document.getElementById('stocktake-body');
+  if (!tbody) return;
+  const tr = document.createElement('tr');
+  tr.className = 'st-row';
+  tr.innerHTML = `
+    <td><input class="st-input" data-field="name" placeholder="Item name"></td>
+    <td><input class="st-input st-narrow" data-field="supplier_item_id" placeholder="ID"></td>
+    <td><select class="st-select" data-field="category">${catOpts}</select></td>
+    <td><select class="st-select st-narrow" data-field="unit">${unitOpts}</select></td>
+    <td><input class="st-input st-narrow" data-field="stock_level" type="number" step="0.01" placeholder="0"></td>
+    <td><input class="st-input st-narrow" data-field="minimum_level" type="number" step="0.01" placeholder="0"></td>
+    <td><input class="st-input st-narrow" data-field="current_unit_cost" type="number" step="0.01" placeholder="0.00"></td>
+    <td><select class="st-select" data-field="supplier_id">${supplierOpts}</select></td>
+    <td><input class="st-input st-narrow" data-field="storage_location" placeholder="Location"></td>
+    <td style="text-align:center"><input type="hidden" data-field="existing_id" value=""><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">new</span></td>
+  `;
+  tbody.appendChild(tr);
+};
+
+window.submitStocktake = async () => {
+  const btn = document.getElementById('st-save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+  const rows = document.querySelectorAll('#stocktake-body .st-row');
+  const today = new Date().toISOString().slice(0,10);
+  let saved = 0, skipped = 0, errors = 0;
+  for (const row of rows) {
+    const get = (field) => {
+      const el = row.querySelector(`[data-field="${field}"]`);
+      return el ? el.value.trim() : '';
+    };
+    const name = get('name');
+    if (!name) { skipped++; continue; }
+    const data = {
+      name,
+      supplier_item_id: get('supplier_item_id') || null,
+      category: get('category'),
+      unit: get('unit') || 'unit',
+      stock_level: parseFloat(get('stock_level')) || 0,
+      minimum_level: parseFloat(get('minimum_level')) || 0,
+      current_unit_cost: parseFloat(get('current_unit_cost')) || 0,
+      storage_location: get('storage_location') || null,
+    };
+    const supId = get('supplier_id');
+    if (supId) data.preferred_supplier_id = Number(supId);
+    const existingId = get('existing_id');
+    try {
+      if (existingId) {
+        await sb.patch('stock_items?id=eq.'+existingId, data);
+      } else {
+        await sb.post('stock_items', data);
+      }
+      // Log a stock movement for new stock levels
+      const itemId = existingId ? Number(existingId) : null;
+      if (!existingId && data.stock_level > 0) {
+        // Will be linked after create — skip movement for now, stock_level already set
+      }
+      saved++;
+    } catch(e) { errors++; console.error('Row save failed', name, e); }
+  }
+  await loadStockItems();
+  if (btn) { btn.disabled = false; btn.textContent = 'Save Stock Take'; }
+  state.showStocktake = false;
+  toast(`Stock take saved — ${saved} items updated${errors > 0 ? ', '+errors+' errors (check console)' : ''}`);
+  render();
+};
+
 window.openStockIn  = (id) => { state.selectedStock = id; state.showStockIn = true; render(); };
 window.openEditStock = (id) => { state.editingStockId = id; state.showStockItem = true; render(); };
 window.openStockOut = (id) => { state.selectedStock = id; state.showStockOut = true; render(); };
