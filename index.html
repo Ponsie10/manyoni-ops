@@ -1307,7 +1307,7 @@ function buildStock() {
         <button class="btn btn-ghost" onclick="showModal('supplier')">+ Supplier</button>
         <button class="btn btn-ghost" onclick="showModal('stockOut')">Issue Stock</button>
         <button class="btn btn-ghost" onclick="showModal('stockIn')">Receive Delivery</button>
-        <button class="btn btn-primary" onclick="showModal('stockItem')">+ New Item</button>
+        <button class="btn btn-primary" onclick="showModal('stockIn')">+ New Item</button>
       </div>
     </div>
 
@@ -1355,7 +1355,7 @@ function buildStock() {
       ` : noMatch ? `
         <div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);border-radius:var(--r);border:1px solid var(--border)">
           <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">No item found for &ldquo;${escHtml(state.stockSearch)}&rdquo;</span>
-          <button class="btn btn-primary" style="font-size:10px;padding:4px 12px" onclick="showModal('stockItem')">+ Add as New Item</button>
+          <button class="btn btn-primary" style="font-size:10px;padding:4px 12px" onclick="showModal('stockIn')">+ Receive New Item</button>
         </div>
       ` : ''}
     </div>
@@ -1414,9 +1414,7 @@ function buildStock() {
                 <span>Total in: ${totalIn} ${s.unit}</span>
                 <span>Total out: ${totalOut} ${s.unit}</span>
                 ${estValue > 0 ? `<span style="color:var(--savanna)">Value: R${estValue.toLocaleString('en-ZA',{maximumFractionDigits:0})}</span>` : ''}
-                ${s.hazard_class ? `<span style="color:var(--red)">&#9888; ${escHtml(s.hazard_class)}</span>` : ''}
-                ${s.ppe_required ? `<span style="color:var(--orange)">PPE: ${escHtml(s.ppe_required)}</span>` : ''}
-                ${s.sds_ref ? `<span>SDS: ${escHtml(s.sds_ref)}</span>` : ''}
+
               </div>
             </div>
             <div style="text-align:right;flex-shrink:0;margin-left:12px">
@@ -1974,20 +1972,7 @@ function buildStockItemModal() {
       <div class="form-group"><label class="form-label">Storage Location</label>
         <input class="form-input" id="si-loc" placeholder="e.g. Chemical store, Workshop storeroom" value="${escHtml(v('storage_location'))}">
       </div>
-      <div style="border-top:1px solid var(--border);margin:14px 0 12px;padding-top:12px">
-        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">SAFETY / HAZARD INFO (optional — applicable to all item types)</div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">Hazard Class</label>
-            <input class="form-input" id="si-hazard" placeholder="e.g. Flammable, Corrosive, Toxic" value="${escHtml(v('hazard_class'))}">
-          </div>
-          <div class="form-group"><label class="form-label">SDS / Safety Ref</label>
-            <input class="form-input" id="si-sds" placeholder="SDS doc ref or location" value="${escHtml(v('sds_ref'))}">
-          </div>
-        </div>
-        <div class="form-group"><label class="form-label">PPE Required</label>
-          <input class="form-input" id="si-ppe" placeholder="e.g. Gloves, goggles, respirator, face shield" value="${escHtml(v('ppe_required'))}">
-        </div>
-      </div>
+
       <div class="form-group"><label class="form-label">Notes</label>
         <input class="form-input" id="si-notes" placeholder="Any additional notes..." value="${escHtml(v('notes'))}">
       </div>
@@ -2040,55 +2025,125 @@ function buildSupplierModal() {
 
 function buildStockInModal() {
   const selId = state.selectedStock;
-  const selItem = state.stockItems.find(s => s.id === selId);
+  const sel = selId ? state.stockItems.find(s => s.id === selId) : null;
+  const isNew = !sel;
+  // For existing item — pre-fill everything. User just confirms qty + price.
   return `
   <div class="modal-overlay" onclick="if(event.target===this)closeModal('stockIn')">
-    <div class="modal" style="width:520px">
-      <div class="modal-title">&#9701; Receive Stock Delivery</div>
-      <div class="form-group"><label class="form-label">Stock Item *</label>
-        <select class="form-select" id="sin-item" onchange="updateStockInPrice(this.value)">
-          <option value="">&#8212; Select item &#8212;</option>
-          ${state.stockItems.map(s => `<option value="${s.id}" ${s.id===selId?'selected':''}>${escHtml(s.name)} &mdash; ${s.stock_level} ${s.unit} in stock (R${Number(s.current_unit_cost||0).toFixed(2)}/${s.unit})</option>`).join('')}
-        </select>
+    <div class="modal" style="width:560px;max-height:90vh;overflow-y:auto">
+      <div class="modal-title">&#9701; Receive Stock ${isNew ? '— New Item' : ''}</div>
+
+      ${isNew ? `
+      <!-- NEW ITEM — full registration form -->
+      <div style="background:color-mix(in srgb,var(--accent) 8%,transparent);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);border-radius:var(--r);padding:10px 14px;margin-bottom:14px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent)">
+        NEW ITEM — fill in all details. They will be saved to the stock register.
       </div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Quantity Received *</label>
-          <input class="form-input" id="sin-qty" type="number" step="0.1" placeholder="0" oninput="calcStockInTotal()">
+        <div class="form-group" style="flex:2"><label class="form-label">Item Name *</label>
+          <input class="form-input" id="sin-name" placeholder="e.g. Diesel, 25A Circuit Breaker" value="${escHtml(state.stockSearch||'')}">
         </div>
-        <div class="form-group"><label class="form-label">Unit Cost (R) *</label>
-          <input class="form-input" id="sin-cost" type="number" step="0.01" placeholder="0.00" value="${selItem?Number(selItem.current_unit_cost||0).toFixed(2):''}" oninput="calcStockInTotal()">
+        <div class="form-group"><label class="form-label">Supplier Item ID</label>
+          <input class="form-input" id="sin-sid" placeholder="Code on slip">
         </div>
-      </div>
-      <div style="background:var(--surface);border-radius:var(--r);padding:10px 14px;margin-bottom:12px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-sec)">
-        Total: <span id="sin-total" style="color:var(--accent-hi);font-weight:700">R0.00</span>
-        &nbsp;&mdash;&nbsp; <span style="color:var(--text-muted)">This price will become the current stock price</span>
       </div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Supplier</label>
-          <select class="form-select" id="sin-sup">
-            <option value="">&#8212; Select supplier &#8212;</option>
-            ${state.suppliers.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('')}
+        <div class="form-group"><label class="form-label">Category *</label>
+          <select class="form-select" id="sin-cat">
+            ${['chemicals','fuel','vehicle_generator_spares','electrical','plumbing','paints_varnish','general_consumables'].map(cat => {
+              const labels = {chemicals:'Chemicals',fuel:'Fuel',vehicle_generator_spares:'Vehicle & Generator Spares',electrical:'Electrical',plumbing:'Plumbing',paints_varnish:'Paints & Varnish',general_consumables:'General Consumables'};
+              return `<option value="${cat}">${labels[cat]}</option>`;
+            }).join('')}
           </select>
         </div>
-        <div class="form-group"><label class="form-label">Invoice / Ref</label>
-          <input class="form-input" id="sin-inv" placeholder="Invoice number or delivery ref">
+        <div class="form-group"><label class="form-label">Unit</label>
+          <select class="form-select" id="sin-unit">
+            ${['L','kg','m','unit','box','roll','bag','tin','pair'].map(u => `<option value="${u}">${u}</option>`).join('')}
+          </select>
         </div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Received By</label>
-          <input class="form-input" id="sin-by" placeholder="Your name">
+        <div class="form-group"><label class="form-label">Minimum Level</label>
+          <input class="form-input" id="sin-min" type="number" step="0.1" value="0" placeholder="0">
         </div>
-        <div class="form-group"><label class="form-label">Notes</label>
-          <input class="form-input" id="sin-notes" placeholder="Delivery notes...">
+        <div class="form-group"><label class="form-label">Storage Location</label>
+          <input class="form-input" id="sin-loc" placeholder="e.g. Workshop storeroom">
         </div>
       </div>
+      <!-- Safety fields — stored for worker side, not shown in management UI -->
+      <input type="hidden" id="sin-hazard" value="">
+      <input type="hidden" id="sin-ppe" value="">
+      <input type="hidden" id="sin-sds" value="">
+      ` : `
+      <!-- EXISTING ITEM — auto-populated, read-only summary -->
+      <div style="background:var(--surface);border-radius:var(--r);padding:12px 14px;margin-bottom:14px;border:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+          <span style="font-size:15px;font-weight:700;color:var(--text)">${escHtml(sel.name)}</span>
+          ${sel.supplier_item_id ? `<span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);background:var(--surface-hi);padding:1px 7px;border-radius:3px">${escHtml(sel.supplier_item_id)}</span>` : ''}
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap">
+          <span>In stock: <strong style="color:var(--text)">${sel.stock_level} ${sel.unit}</strong></span>
+          <span>Min level: ${sel.minimum_level} ${sel.unit}</span>
+          <span>Last price: <strong style="color:var(--savanna)">R${Number(sel.current_unit_cost||0).toFixed(2)}/${sel.unit}</strong></span>
+          ${sel.storage_location ? `<span>&#128204; ${escHtml(sel.storage_location)}</span>` : ''}
+        </div>
+      </div>
+      <input type="hidden" id="sin-name" value="${escHtml(sel.name)}">
+      <input type="hidden" id="sin-sid" value="${escHtml(sel.supplier_item_id||'')}">
+      <input type="hidden" id="sin-cat" value="${escHtml(sel.category)}">
+      <input type="hidden" id="sin-unit" value="${escHtml(sel.unit)}">
+      <input type="hidden" id="sin-min" value="${sel.minimum_level}">
+      <input type="hidden" id="sin-loc" value="${escHtml(sel.storage_location||'')}">
+      <input type="hidden" id="sin-hazard" value="${escHtml(sel.hazard_class||'')}">
+      <input type="hidden" id="sin-ppe" value="${escHtml(sel.ppe_required||'')}">
+      <input type="hidden" id="sin-sds" value="${escHtml(sel.sds_ref||'')}">
+      `}
+
+      <!-- DELIVERY DETAILS — always shown -->
+      <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:${isNew?'14px':'0'}">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">DELIVERY DETAILS</div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Quantity Received *</label>
+            <input class="form-input" id="sin-qty" type="number" step="0.1" placeholder="0" oninput="calcStockInTotal()">
+          </div>
+          <div class="form-group"><label class="form-label">Unit Cost (R) *</label>
+            <input class="form-input" id="sin-cost" type="number" step="0.01"
+              value="${sel ? Number(sel.current_unit_cost||0).toFixed(2) : ''}"
+              placeholder="0.00" oninput="calcStockInTotal()">
+          </div>
+        </div>
+        <div style="background:var(--surface);border-radius:var(--r);padding:10px 14px;margin-bottom:12px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-sec)">
+          Total: <span id="sin-total" style="color:var(--accent-hi);font-weight:700">R0.00</span>
+          <span style="color:var(--text-muted);margin-left:8px;font-size:10px">— auto-logged to cost ledger. New price becomes current stock price.</span>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Supplier</label>
+            <select class="form-select" id="sin-sup">
+              <option value="">— Select supplier —</option>
+              ${state.suppliers.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group"><label class="form-label">Invoice / Ref</label>
+            <input class="form-input" id="sin-inv" placeholder="Invoice number or delivery ref">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Received By</label>
+            <input class="form-input" id="sin-by" placeholder="Your name">
+          </div>
+          <div class="form-group"><label class="form-label">Notes</label>
+            <input class="form-input" id="sin-notes" placeholder="Delivery notes...">
+          </div>
+        </div>
+      </div>
+
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
         <button class="btn btn-ghost" onclick="closeModal('stockIn')">Cancel</button>
-        <button class="btn btn-primary" onclick="submitStockIn()">Receive & Log Cost</button>
+        <button class="btn btn-primary" onclick="submitStockIn()">${isNew ? 'Register & Receive' : 'Receive & Log Cost'}</button>
       </div>
     </div>
   </div>`;
 }
+
 
 function buildStockOutModal() {
   const selId = state.selectedStock;
@@ -2376,9 +2431,6 @@ window.submitStockItem = async () => {
     stock_level: document.getElementById('si-stock')?.value || 0,
     current_unit_cost: document.getElementById('si-cost')?.value || 0,
     storage_location: document.getElementById('si-loc')?.value || null,
-    hazard_class: document.getElementById('si-hazard')?.value || null,
-    ppe_required: document.getElementById('si-ppe')?.value || null,
-    sds_ref: document.getElementById('si-sds')?.value || null,
     notes: document.getElementById('si-notes')?.value || null,
   };
   if (state.editingStockId) {
@@ -2405,11 +2457,31 @@ window.submitSupplier = async () => {
 };
 
 window.submitStockIn = async () => {
-  const itemId = Number(document.getElementById('sin-item')?.value);
-  const qty    = document.getElementById('sin-qty')?.value;
-  const cost   = document.getElementById('sin-cost')?.value;
-  if (!itemId || !qty || !cost) { toast('Item, quantity and unit cost are required','error'); return; }
+  const qty  = document.getElementById('sin-qty')?.value;
+  const cost = document.getElementById('sin-cost')?.value;
+  if (!qty || !cost) { toast('Quantity and unit cost are required','error'); return; }
   const supVal = document.getElementById('sin-sup')?.value;
+  let itemId = state.selectedStock;
+  if (!itemId) {
+    // New item — create stock record first
+    const name = document.getElementById('sin-name')?.value?.trim();
+    if (!name) { toast('Item name is required','error'); return; }
+    const created = await createStockItem({
+      name,
+      supplier_item_id: document.getElementById('sin-sid')?.value || null,
+      category: document.getElementById('sin-cat')?.value,
+      unit: document.getElementById('sin-unit')?.value,
+      minimum_level: document.getElementById('sin-min')?.value || 0,
+      stock_level: 0,
+      current_unit_cost: cost,
+      storage_location: document.getElementById('sin-loc')?.value || null,
+      hazard_class: document.getElementById('sin-hazard')?.value || null,
+      ppe_required: document.getElementById('sin-ppe')?.value || null,
+      sds_ref: document.getElementById('sin-sds')?.value || null,
+    });
+    if (!created || !created.id) { toast('Failed to create stock item','error'); return; }
+    itemId = created.id;
+  }
   await receiveStock(
     itemId, qty, cost,
     supVal ? Number(supVal) : null,
