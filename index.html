@@ -397,14 +397,15 @@ const sb = {
 const state = {
   page: 'dashboard',
   tasks: [], taskLogs: [], assets: [], ecoObs: [], chemicals: [],
-  chemUsage: [], costEntries: [], stockItems: [], stockMovements: [], suppliers: [],
+  chemUsage: [], costEntries: [], stockItems: [], stockMovements: [], suppliers: [], assetLogs: [],
   loading: false, dbReady: false,
   showNewTask: false, showNewAsset: false, showNewObs: false,
   showNewChem: false, showLogWork: false, showChemUse: false,
   showCostEntry: false, showStockItem: false, showStockIn: false,
   showStockOut: false, showOpCost: false, showSupplier: false, showStocktake: false,
-  selectedTask: null, selectedChem: null, selectedStock: null, editingStockId: null,
-  taskFilter: 'all', assetFilter: 'all', costCatFilter: '', stockCatFilter: 'all',
+  showAssetLog: false, showNewAsset: false,
+  selectedTask: null, selectedChem: null, selectedStock: null, editingStockId: null, selectedAsset: null, editingAssetId: null,
+  taskFilter: 'all', assetFilter: 'all', assetCatFilter: 'all', costCatFilter: '', stockCatFilter: 'all',
   stockSearch: '',
   toasts: [],
 };
@@ -467,13 +468,41 @@ CREATE TABLE IF NOT EXISTS task_logs (
 CREATE TABLE IF NOT EXISTS assets (
   id BIGSERIAL PRIMARY KEY,
   asset_name TEXT NOT NULL,
-  category TEXT,
+  asset_type TEXT,
+  category TEXT NOT NULL DEFAULT 'general_tools',
   serial_number TEXT,
+  make_model TEXT,
   purchase_date DATE,
-  value NUMERIC,
+  purchase_value NUMERIC DEFAULT 0,
+  current_value NUMERIC DEFAULT 0,
+  expected_life_years NUMERIC,
+  warranty_expiry DATE,
+  supplier TEXT,
   status TEXT DEFAULT 'operational',
-  usage_hours NUMERIC DEFAULT 0,
-  last_service DATE,
+  tracking_unit TEXT DEFAULT 'hours',
+  current_reading NUMERIC DEFAULT 0,
+  service_interval_unit NUMERIC,
+  last_service_date DATE,
+  last_service_reading NUMERIC DEFAULT 0,
+  next_service_due NUMERIC,
+  storage_location TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS asset_logs (
+  id BIGSERIAL PRIMARY KEY,
+  asset_id BIGINT REFERENCES assets(id),
+  log_type TEXT NOT NULL,
+  log_date DATE DEFAULT CURRENT_DATE,
+  reading NUMERIC,
+  description TEXT,
+  cost NUMERIC DEFAULT 0,
+  done_by TEXT,
+  supplier TEXT,
+  next_due_reading NUMERIC,
+  next_due_date DATE,
+  resolved BOOLEAN DEFAULT false,
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -863,6 +892,7 @@ function buildApp() {
   ${state.showStockOut ? buildStockOutModal() : ''}
   ${state.showOpCost ? buildOpCostModal() : ''}
   ${state.showSupplier ? buildSupplierModal() : ''}
+  ${state.showAssetLog ? buildAssetLogModal() : ''}
   ${state.showStocktake ? buildStocktakeModal() : ''}
   ${state.selectedTask ? buildTaskDetail() : ''}
   `;
@@ -942,7 +972,7 @@ function buildTopbar() {
 }
 
 function buildPage() {
-  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: buildAssets, environment: buildEcology, stock: buildStock, costs: buildCosts, reports: buildReports };
+  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: state.selectedAsset ? buildAssetDetail : buildAssets, environment: buildEcology, stock: buildStock, costs: buildCosts, reports: buildReports };
   if (state.page === 'chemicals') { state.page = 'stock'; state.stockCatFilter = 'chemicals'; }
   return (pages[state.page] || buildDashboard)();
 }
@@ -1090,49 +1120,209 @@ function buildTaskRow(t) {
 // ASSETS
 // ═══════════════════════════════════════
 function buildAssets() {
-  const opCount = state.assets.filter(a => a.status === 'operational').length;
-  const maintCount = state.assets.filter(a => a.status === 'maintenance').length;
+  const CAT = {
+    high_value: { label:'High Value Assets', color:'var(--accent-hi)', icon:'◈' },
+    fire_fighting: { label:'Fire Fighting Assets', color:'var(--red)', icon:'◉' },
+    conservation: { label:'Conservation Assets', color:'var(--green)', icon:'◎' },
+    general_tools: { label:'General Assets & Tools', color:'var(--text-sec)', icon:'◧' }
+  };
+  const filter = state.assetCatFilter || 'all';
+  const filtered = filter === 'all' ? state.assets : state.assets.filter(a => a.category === filter);
+
+  // Service due — next_service_due <= current_reading + 10% of interval
+  const serviceDue = state.assets.filter(a => {
+    if (!a.next_service_due || !a.service_interval_unit) return false;
+    const buffer = Number(a.service_interval_unit) * 0.1;
+    return Number(a.current_reading||0) >= Number(a.next_service_due) - buffer;
+  });
+  // Warranty expiring within 60 days
+  const today = new Date(); const in60 = new Date(today); in60.setDate(in60.getDate()+60);
+  const warrantyAlert = state.assets.filter(a => {
+    if (!a.warranty_expiry) return false;
+    const exp = new Date(a.warranty_expiry);
+    return exp >= today && exp <= in60;
+  });
+  const totalValue = state.assets.reduce((s,a) => s + Number(a.current_value||a.purchase_value||0), 0);
+  const needsAttn = state.assets.filter(a => a.status === 'fault' || a.status === 'maintenance').length;
 
   return `
   <div class="col-gap">
-    <div style="display:flex;justify-content:space-between;align-items:flex-end">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px">
       <div class="section-title" style="margin-bottom:0">
         <div class="section-sub">— Fleet & Equipment</div>
-        <div class="section-h">Asset Registry</div>
+        <div class="section-h">Asset Register</div>
       </div>
       <button class="btn btn-primary" onclick="showModal('newAsset')">+ Register Asset</button>
     </div>
 
-    <div class="grid-3">
+    <div class="grid-4">
       ${statCard('Total Assets', state.assets.length, 'registered', 'var(--accent-hi)')}
-      ${statCard('Operational', opCount, 'active', 'var(--green)')}
-      ${statCard('In Maintenance', maintCount, 'offline', 'var(--orange)')}
+      ${statCard('Total Value', 'R'+totalValue.toLocaleString('en-ZA',{maximumFractionDigits:0}), 'current', 'var(--savanna)')}
+      ${statCard('Service Due', serviceDue.length, 'alerts', serviceDue.length > 0 ? 'var(--orange)' : 'var(--green)')}
+      ${statCard('Needs Attention', needsAttn, 'assets', needsAttn > 0 ? 'var(--red)' : 'var(--green)')}
+    </div>
+
+    ${(serviceDue.length || warrantyAlert.length) ? `
+    <div class="card" style="border-color:color-mix(in srgb,var(--orange) 40%,var(--border));background:color-mix(in srgb,var(--orange) 5%,var(--dark-mid))">
+      <div class="card-title" style="color:var(--orange)">&#9888; Alerts</div>
+      ${serviceDue.map(a => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:color-mix(in srgb,var(--orange) 8%,transparent);border-radius:var(--r);margin-bottom:5px">
+          <span style="font-size:13px;color:var(--text);font-weight:600">${escHtml(a.asset_name)}</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--orange)">SERVICE DUE — ${a.current_reading} / ${a.next_service_due} ${a.tracking_unit}</span>
+        </div>`).join('')}
+      ${warrantyAlert.map(a => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:color-mix(in srgb,var(--sky) 8%,transparent);border-radius:var(--r);margin-bottom:5px">
+          <span style="font-size:13px;color:var(--text);font-weight:600">${escHtml(a.asset_name)}</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--sky)">WARRANTY EXPIRES ${fmtDate(a.warranty_expiry)}</span>
+        </div>`).join('')}
+    </div>` : ''}
+
+    <div class="filter-row">
+      <button class="filter-btn ${filter==='all'?'active':''}" onclick="setAssetFilter('all')">ALL (${state.assets.length})</button>
+      ${Object.entries(CAT).map(([k,v]) => {
+        const n = state.assets.filter(a=>a.category===k).length;
+        return `<button class="filter-btn ${filter===k?'active':''}" onclick="setAssetFilter('${k}')" style="color:${filter===k?'':v.color}">${v.icon} ${v.label.toUpperCase()} (${n})</button>`;
+      }).join('')}
     </div>
 
     <div class="col-gap" style="gap:8px">
-      ${state.assets.length ? state.assets.map(a => `
-        <div class="card" style="cursor:pointer">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start">
-            <div>
-              <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-                <div style="width:10px;height:10px;border-radius:50%;background:${statusColor(a.status)};box-shadow:0 0 6px ${statusColor(a.status)}80"></div>
+      ${filtered.length ? filtered.map(a => {
+        const cat = CAT[a.category] || CAT.general_tools;
+        const col = cat.color;
+        const logs = (state.assetLogs||[]).filter(l => l.asset_id === a.id);
+        const lastLog = logs[0];
+        const isTracked = ['high_value','fire_fighting','conservation'].includes(a.category);
+        const isHighValue = a.category === 'high_value';
+        const svcDue = a.next_service_due && Number(a.current_reading||0) >= Number(a.next_service_due) - Number(a.service_interval_unit||0)*0.1;
+        const faultFlag = a.status === 'fault' || a.status === 'maintenance';
+        const depPct = (a.expected_life_years && a.purchase_date) ?
+          Math.min(((new Date()-new Date(a.purchase_date))/(Number(a.expected_life_years)*365.25*24*3600*1000))*100,100) : null;
+        const curVal = Number(a.current_value||a.purchase_value||0);
+        const logCosts = logs.filter(l=>Number(l.cost||0)>0).reduce((s,l)=>s+Number(l.cost),0);
+
+        return `
+        <div class="card" style="${faultFlag?'border-color:color-mix(in srgb,var(--red) 40%,var(--border));':svcDue?'border-color:color-mix(in srgb,var(--orange) 40%,var(--border));':''}cursor:pointer" onclick="openAsset(${a.id})">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:${col};background:color-mix(in srgb,${col} 15%,transparent);padding:2px 7px;border-radius:3px;border:1px solid color-mix(in srgb,${col} 25%,transparent)">${cat.label.toUpperCase()}</span>
+                ${a.asset_type ? `<span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);background:var(--surface);padding:2px 6px;border-radius:3px">${escHtml(a.asset_type)}</span>` : ''}
                 <span style="font-size:15px;font-weight:700;color:var(--text)">${escHtml(a.asset_name)}</span>
-                ${a.serial_number ? `<span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">${escHtml(a.serial_number)}</span>` : ''}
               </div>
-              <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-sec);display:flex;gap:16px;flex-wrap:wrap">
-                <span>${a.category||'—'}</span>
-                ${a.value ? `<span>R${Number(a.value).toLocaleString()}</span>` : ''}
-                ${a.usage_hours ? `<span>${a.usage_hours} hrs</span>` : ''}
-                ${a.last_service ? `<span>Last service: ${fmtDate(a.last_service)}</span>` : ''}
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap">
+                ${a.make_model ? `<span>${escHtml(a.make_model)}</span>` : ''}
+                ${a.serial_number ? `<span>S/N: ${escHtml(a.serial_number)}</span>` : ''}
+                ${curVal > 0 ? `<span style="color:var(--savanna)">Value: R${curVal.toLocaleString('en-ZA',{maximumFractionDigits:0})}</span>` : ''}
+                ${logCosts > 0 ? `<span>Logged costs: R${logCosts.toLocaleString('en-ZA',{maximumFractionDigits:0})}</span>` : ''}
+                ${a.warranty_expiry ? `<span style="color:${new Date(a.warranty_expiry)<today?'var(--red)':'var(--sky)'}">Warranty: ${fmtDate(a.warranty_expiry)}</span>` : ''}
+                ${isTracked && a.current_reading ? `<span style="color:var(--accent)">${a.current_reading} ${a.tracking_unit}</span>` : ''}
+                ${isTracked && a.last_service_date ? `<span>Last service: ${fmtDate(a.last_service_date)}</span>` : ''}
+                ${a.storage_location ? `<span>&#128204; ${escHtml(a.storage_location)}</span>` : ''}
               </div>
+              ${depPct !== null ? `
+              <div style="margin-top:8px">
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted)">ASSET LIFE</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:${depPct>80?'var(--red)':depPct>50?'var(--orange)':'var(--text-muted)'}">${depPct.toFixed(0)}% elapsed</span>
+                </div>
+                <div style="height:3px;background:var(--surface-hi);border-radius:2px">
+                  <div style="height:100%;width:${depPct}%;background:${depPct>80?'var(--red)':depPct>50?'var(--orange)':'var(--green)'};border-radius:2px;transition:width 0.4s"></div>
+                </div>
+              </div>` : ''}
             </div>
-            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:${statusColor(a.status)};background:color-mix(in srgb,${statusColor(a.status)} 15%,transparent);padding:4px 10px;border-radius:4px;border:1px solid color-mix(in srgb,${statusColor(a.status)} 30%,transparent)">${(a.status||'').toUpperCase()}</span>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;margin-left:12px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:${statusColor(a.status)};background:color-mix(in srgb,${statusColor(a.status)} 15%,transparent);padding:3px 9px;border-radius:4px;border:1px solid color-mix(in srgb,${statusColor(a.status)} 30%,transparent);white-space:nowrap">${(a.status||'').toUpperCase()}</span>
+              ${svcDue ? `<span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--orange);background:color-mix(in srgb,var(--orange) 12%,transparent);padding:2px 7px;border-radius:3px">SERVICE DUE</span>` : ''}
+            </div>
           </div>
-        </div>
-      `).join('') : '<div class="empty card">No assets registered yet</div>'}
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="event.stopPropagation();openAssetLog(${a.id})">+ Log Entry</button>
+            <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="event.stopPropagation();openEditAsset(${a.id})">&#9998; Edit</button>
+            ${lastLog ? `<span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);padding:4px 0;margin-left:4px">Last: ${lastLog.log_type} — ${fmtDate(lastLog.log_date)}</span>` : ''}
+          </div>
+        </div>`;
+      }).join('') : `<div class="empty card">No assets registered yet</div>`}
     </div>
   </div>`;
 }
+
+function buildAssetDetail() {
+  const a = state.assets.find(x => x.id === state.selectedAsset);
+  if (!a) return '';
+  const logs = (state.assetLogs||[]).filter(l => l.asset_id === a.id);
+  const CAT = {high_value:'High Value',fire_fighting:'Fire Fighting',conservation:'Conservation',general_tools:'General & Tools'};
+  const LOG_COLORS = {service:'var(--green)',check:'var(--sky)',repair:'var(--red)',fuel:'var(--orange)',issue:'var(--red)',mileage:'var(--accent)',hours:'var(--accent)',maintenance:'var(--savanna)'};
+  const totalCost = logs.reduce((s,l)=>s+Number(l.cost||0),0);
+
+  return `
+  <div class="col-gap">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <button class="btn btn-ghost" style="font-size:11px" onclick="closeAsset()">&#8592; Back to Assets</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" onclick="openAssetLog(${a.id})">+ Log Entry</button>
+        <button class="btn btn-ghost" onclick="openEditAsset(${a.id})">&#9998; Edit</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-size:22px;font-weight:800;color:var(--text);margin-bottom:4px">${escHtml(a.asset_name)}</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap">
+            <span>${CAT[a.category]||a.category}</span>
+            ${a.asset_type?`<span>${escHtml(a.asset_type)}</span>`:''}
+            ${a.make_model?`<span>${escHtml(a.make_model)}</span>`:''}
+            ${a.serial_number?`<span>S/N: ${escHtml(a.serial_number)}</span>`:''}
+            ${a.supplier?`<span>Supplier: ${escHtml(a.supplier)}</span>`:''}
+          </div>
+        </div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:${statusColor(a.status)};background:color-mix(in srgb,${statusColor(a.status)} 15%,transparent);padding:5px 12px;border-radius:4px;border:1px solid color-mix(in srgb,${statusColor(a.status)} 30%,transparent)">${(a.status||'').toUpperCase()}</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:16px">
+        ${a.purchase_value>0?`<div style="background:var(--surface);padding:10px;border-radius:var(--r)"><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:3px">PURCHASE VALUE</div><div style="font-size:16px;font-weight:700;color:var(--text)">R${Number(a.purchase_value).toLocaleString('en-ZA',{maximumFractionDigits:0})}</div></div>`:''}
+        ${a.current_value>0?`<div style="background:var(--surface);padding:10px;border-radius:var(--r)"><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:3px">CURRENT VALUE</div><div style="font-size:16px;font-weight:700;color:var(--savanna)">R${Number(a.current_value).toLocaleString('en-ZA',{maximumFractionDigits:0})}</div></div>`:''}
+        ${totalCost>0?`<div style="background:var(--surface);padding:10px;border-radius:var(--r)"><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:3px">TOTAL LOGGED COSTS</div><div style="font-size:16px;font-weight:700;color:var(--red)">R${totalCost.toLocaleString('en-ZA',{maximumFractionDigits:0})}</div></div>`:''}
+        ${a.current_reading>0?`<div style="background:var(--surface);padding:10px;border-radius:var(--r)"><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:3px">CURRENT ${(a.tracking_unit||'').toUpperCase()}</div><div style="font-size:16px;font-weight:700;color:var(--accent)">${a.current_reading} ${a.tracking_unit}</div></div>`:''}
+        ${a.next_service_due?`<div style="background:var(--surface);padding:10px;border-radius:var(--r)"><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:3px">NEXT SERVICE</div><div style="font-size:16px;font-weight:700;color:var(--orange)">${a.next_service_due} ${a.tracking_unit}</div></div>`:''}
+        ${a.warranty_expiry?`<div style="background:var(--surface);padding:10px;border-radius:var(--r)"><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:3px">WARRANTY EXPIRES</div><div style="font-size:15px;font-weight:700;color:${new Date(a.warranty_expiry)<new Date()?'var(--red)':'var(--sky)'}">${fmtDate(a.warranty_expiry)}</div></div>`:''}
+        ${a.purchase_date?`<div style="background:var(--surface);padding:10px;border-radius:var(--r)"><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:3px">PURCHASED</div><div style="font-size:14px;font-weight:700;color:var(--text)">${fmtDate(a.purchase_date)}</div></div>`:''}
+        ${a.expected_life_years?`<div style="background:var(--surface);padding:10px;border-radius:var(--r)"><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:3px">EXPECTED LIFE</div><div style="font-size:14px;font-weight:700;color:var(--text)">${a.expected_life_years} years</div></div>`:''}
+      </div>
+      ${a.notes?`<div style="margin-top:12px;font-size:13px;color:var(--text-sec);border-top:1px solid var(--border);padding-top:10px">${escHtml(a.notes)}</div>`:''}
+    </div>
+
+    <div class="card">
+      <div class="card-title">&#9670; Log History</div>
+      ${logs.length ? `
+      <div class="col-gap" style="gap:5px">
+        ${logs.map(l => {
+          const col = LOG_COLORS[l.log_type]||'var(--text-muted)';
+          return `
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:9px 12px;background:var(--surface);border-radius:var(--r);border:1px solid var(--border)">
+            <div style="display:flex;align-items:flex-start;gap:10px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:${col};background:color-mix(in srgb,${col} 15%,transparent);padding:2px 7px;border-radius:3px;white-space:nowrap;margin-top:2px">${l.log_type.toUpperCase()}</span>
+              <div>
+                <div style="font-size:13px;color:var(--text)">${escHtml(l.description||'—')}</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:2px;display:flex;gap:10px;flex-wrap:wrap">
+                  ${l.done_by?`<span>${escHtml(l.done_by)}</span>`:''}
+                  ${l.reading?`<span>${l.reading} ${a.tracking_unit}</span>`:''}
+                  ${l.supplier?`<span>${escHtml(l.supplier)}</span>`:''}
+                  ${Number(l.cost||0)>0?`<span style="color:var(--savanna)">R${Number(l.cost).toLocaleString('en-ZA',{maximumFractionDigits:0})}</span>`:''}
+                  ${l.next_due_reading?`<span>Next due: ${l.next_due_reading} ${a.tracking_unit}</span>`:''}
+                  ${l.next_due_date?`<span>Due: ${fmtDate(l.next_due_date)}</span>`:''}
+                </div>
+                ${l.notes?`<div style="font-size:12px;color:var(--text-sec);margin-top:4px">${escHtml(l.notes)}</div>`:''}
+              </div>
+            </div>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);flex-shrink:0;margin-left:10px">${fmtDate(l.log_date)}</span>
+          </div>`;
+        }).join('')}
+      </div>` : `<div class="empty" style="padding:16px 0">No log entries yet</div>`}
+    </div>
+  </div>`;
+}
+
 
 // ═══════════════════════════════════════
 // ECOLOGY
@@ -1791,42 +1981,192 @@ function buildTaskModal() {
 }
 
 function buildAssetModal() {
+  const editing = state.editingAssetId ? state.assets.find(a => a.id === state.editingAssetId) : null;
+  const v = (f, fb='') => editing ? (editing[f]!==null&&editing[f]!==undefined ? editing[f] : fb) : fb;
+  const HIGH_VALUE_TYPES = ['4x4 / Game Viewer','Bakkie / LDV','Generator','Tractor','TLB / Loader','Golf Cart','Trailer','Implement','Other'];
+  const FF_TYPES = ['Bakkie Sakkie','Fire Beater','Drip Torch','Knapsack Pump','Fire Rake','Other'];
+  const CONS_TYPES = ['Brush Cutter','Weed Eater','Knapsack Sprayer','Chain Saw','Pruning Saw','Other'];
+  const TOOL_TYPES = ['Power Drill','Angle Grinder','Circular Saw','Jigsaw','Wrench Set','Hand Tools','Ladder','Other'];
+
+  const catSubtypes = {
+    high_value: HIGH_VALUE_TYPES, fire_fighting: FF_TYPES,
+    conservation: CONS_TYPES, general_tools: TOOL_TYPES
+  };
+  const selCat = v('category','high_value');
+  const subtypes = catSubtypes[selCat] || HIGH_VALUE_TYPES;
+  const isTracked = ['high_value','fire_fighting','conservation'].includes(selCat);
+  const isHighValue = selCat === 'high_value';
+
   return `
   <div class="modal-overlay" onclick="if(event.target===this)closeModal('newAsset')">
-    <div class="modal">
-      <div class="modal-title">◧ Register Asset</div>
-      <div class="form-group"><label class="form-label">Asset Name *</label><input class="form-input" id="a-name" placeholder="e.g. John Deere 5055E"></div>
+    <div class="modal" style="width:600px;max-height:92vh;overflow-y:auto">
+      <div class="modal-title">◧ ${editing?'Edit Asset':'Register Asset'}</div>
+
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Category</label>
-          <select class="form-select" id="a-cat">
-            <option>Tractor</option><option>Vehicle</option><option>UTV</option>
-            <option>Heavy Equipment</option><option>Implement</option><option>Tool</option><option>Other</option>
-          </select>
+        <div class="form-group" style="flex:2"><label class="form-label">Asset Name *</label>
+          <input class="form-input" id="a-name" placeholder="e.g. Toyota Hilux 2022, John Deere 5055E" value="${escHtml(v('asset_name'))}">
         </div>
         <div class="form-group"><label class="form-label">Status</label>
           <select class="form-select" id="a-status">
-            <option value="operational">Operational</option>
-            <option value="maintenance">In Maintenance</option>
-            <option value="fault">Fault</option>
+            ${['operational','maintenance','fault','written_off','standby'].map(s=>`<option value="${s}" ${v('status','operational')===s?'selected':''}>${s.replace(/_/g,' ').replace(/\w/g,c=>c.toUpperCase())}</option>`).join('')}
           </select>
         </div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Serial Number</label><input class="form-input" id="a-serial" placeholder="Serial / VIN"></div>
-        <div class="form-group"><label class="form-label">Value (R)</label><input class="form-input" id="a-value" type="number" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Category *</label>
+          <select class="form-select" id="a-cat" onchange="assetCatChange(this.value)">
+            <option value="high_value" ${v('category')==='high_value'?'selected':''}>High Value Assets</option>
+            <option value="fire_fighting" ${v('category')==='fire_fighting'?'selected':''}>Fire Fighting Assets</option>
+            <option value="conservation" ${v('category')==='conservation'?'selected':''}>Conservation Assets</option>
+            <option value="general_tools" ${v('category')==='general_tools'?'selected':''}>General Assets & Tools</option>
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Asset Type</label>
+          <select class="form-select" id="a-type">
+            ${subtypes.map(t=>`<option value="${t}" ${v('asset_type')===t?'selected':''}>${t}</option>`).join('')}
+          </select>
+        </div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Usage Hours</label><input class="form-input" id="a-hours" type="number" placeholder="0"></div>
-        <div class="form-group"><label class="form-label">Last Service Date</label><input class="form-input" id="a-service" type="date"></div>
+        <div class="form-group"><label class="form-label">Make / Model</label>
+          <input class="form-input" id="a-model" placeholder="e.g. Toyota Hilux 2.8 GD6" value="${escHtml(v('make_model'))}">
+        </div>
+        <div class="form-group"><label class="form-label">Serial / VIN / Reg</label>
+          <input class="form-input" id="a-serial" placeholder="Serial number or registration" value="${escHtml(v('serial_number'))}">
+        </div>
       </div>
-      <div class="form-group"><label class="form-label">Notes</label><textarea class="form-textarea" id="a-notes" placeholder="Condition notes, location, etc."></textarea></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Supplier / Dealer</label>
+          <input class="form-input" id="a-supplier" placeholder="Who it was bought from" value="${escHtml(v('supplier'))}">
+        </div>
+        <div class="form-group"><label class="form-label">Storage / Location</label>
+          <input class="form-input" id="a-loc" placeholder="e.g. Workshop, Gate house" value="${escHtml(v('storage_location'))}">
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border);margin:14px 0 12px;padding-top:12px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">VALUE & LIFE</div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Purchase Date</label>
+            <input class="form-input" id="a-pdate" type="date" value="${v('purchase_date')}">
+          </div>
+          <div class="form-group"><label class="form-label">Purchase Value (R)</label>
+            <input class="form-input" id="a-pval" type="number" step="0.01" placeholder="0.00" value="${v('purchase_value','')||''}">
+          </div>
+          <div class="form-group"><label class="form-label">Current Value (R)</label>
+            <input class="form-input" id="a-cval" type="number" step="0.01" placeholder="0.00" value="${v('current_value','')||''}">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Expected Life (years)</label>
+            <input class="form-input" id="a-life" type="number" step="0.5" placeholder="e.g. 10" value="${v('expected_life_years','')||''}">
+          </div>
+          <div class="form-group"><label class="form-label">Warranty Expiry</label>
+            <input class="form-input" id="a-warranty" type="date" value="${v('warranty_expiry')}">
+          </div>
+        </div>
+      </div>
+
+      <div id="a-tracking-section" style="border-top:1px solid var(--border);margin:14px 0 12px;padding-top:12px;${isTracked?'':'display:none'}">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">USAGE TRACKING</div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Tracking Unit</label>
+            <select class="form-select" id="a-tunit">
+              <option value="km" ${v('tracking_unit')==='km'?'selected':''}>Kilometres (km)</option>
+              <option value="hrs" ${v('tracking_unit','hrs')==='hrs'?'selected':''}>Hours (hrs)</option>
+            </select>
+          </div>
+          <div class="form-group"><label class="form-label">Current Reading</label>
+            <input class="form-input" id="a-reading" type="number" step="0.1" placeholder="0" value="${v('current_reading','')||''}">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Service Interval</label>
+            <input class="form-input" id="a-svcint" type="number" step="1" placeholder="e.g. 500 (km or hrs)" value="${v('service_interval_unit','')||''}">
+          </div>
+          <div class="form-group"><label class="form-label">Last Service Date</label>
+            <input class="form-input" id="a-lsvc" type="date" value="${v('last_service_date')}">
+          </div>
+          <div class="form-group"><label class="form-label">Next Service Due</label>
+            <input class="form-input" id="a-nsvc" type="number" placeholder="reading at next service" value="${v('next_service_due','')||''}">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group"><label class="form-label">Notes</label>
+        <textarea class="form-textarea" id="a-notes" placeholder="Condition notes, modifications, known issues...">${escHtml(v('notes'))}</textarea>
+      </div>
+
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
         <button class="btn btn-ghost" onclick="closeModal('newAsset')">Cancel</button>
-        <button class="btn btn-primary" onclick="submitAsset()">Register Asset</button>
+        <button class="btn btn-primary" onclick="submitAsset()">${editing?'Save Changes':'Register Asset'}</button>
       </div>
     </div>
   </div>`;
 }
+
+function buildAssetLogModal() {
+  const a = state.assets.find(x => x.id === state.selectedAsset);
+  if (!a) return '';
+  const isTracked = ['high_value','fire_fighting','conservation'].includes(a.category);
+  const isHighValue = a.category === 'high_value';
+  const LOG_TYPES = {
+    high_value: ['service','fuel','repair','check','mileage','issue','maintenance'],
+    fire_fighting: ['check','service','repair','issue','maintenance'],
+    conservation: ['check','service','repair','issue','maintenance'],
+    general_tools: ['check','repair','issue','maintenance']
+  };
+  const logTypes = LOG_TYPES[a.category] || LOG_TYPES.general_tools;
+
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal('assetLog')">
+    <div class="modal" style="width:520px">
+      <div class="modal-title">&#9670; Log Entry — ${escHtml(a.asset_name)}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-bottom:12px">
+        Current: ${a.current_reading||0} ${a.tracking_unit||'hrs'} &nbsp;·&nbsp; Last service: ${a.last_service_date?fmtDate(a.last_service_date):'Not recorded'}
+        ${a.next_service_due?` &nbsp;·&nbsp; Next service due: ${a.next_service_due} ${a.tracking_unit}`:''}
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Log Type *</label>
+          <select class="form-select" id="al-type">
+            ${logTypes.map(t=>`<option value="${t}">${t.charAt(0).toUpperCase()+t.slice(1)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Date</label>
+          <input class="form-input" id="al-date" type="date" value="${new Date().toISOString().slice(0,10)}">
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Description *</label>
+        <input class="form-input" id="al-desc" placeholder="e.g. 10,000km service, replaced oil filter and brake pads">
+      </div>
+      ${isTracked ? `
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Current Reading (${a.tracking_unit||'hrs'})</label>
+          <input class="form-input" id="al-reading" type="number" step="0.1" placeholder="${a.current_reading||0}">
+        </div>
+        <div class="form-group"><label class="form-label">Next Service Due (${a.tracking_unit||'hrs'})</label>
+          <input class="form-input" id="al-nextdue" type="number" placeholder="${a.next_service_due||''}">
+        </div>
+      </div>` : '<input type="hidden" id="al-reading" value=""><input type="hidden" id="al-nextdue" value="">'}
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Cost (R)</label>
+          <input class="form-input" id="al-cost" type="number" step="0.01" placeholder="0.00">
+        </div>
+        <div class="form-group"><label class="form-label">Done By / Supplier</label>
+          <input class="form-input" id="al-by" placeholder="Name or workshop">
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Notes</label>
+        <input class="form-input" id="al-notes" placeholder="Additional details...">
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
+        <button class="btn btn-ghost" onclick="closeModal('assetLog')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitAssetLog()">Save Log Entry</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 
 function buildObsModal() {
   return `
@@ -2512,6 +2852,8 @@ window.showModal = (name) => {
   if(name==='opCost') state.showOpCost = true;
   if(name==='supplier') state.showSupplier = true;
   if(name==='stocktake') { state.showStocktake = true; }
+  if(name==='assetLog') state.showAssetLog = true;
+  if(name==='newAsset') { state.showNewAsset = true; }
   render();
 };
 window.closeModal = (name) => {
@@ -2529,6 +2871,8 @@ window.closeModal = (name) => {
   if(name==='opCost') state.showOpCost = false;
   if(name==='supplier') state.showSupplier = false;
   if(name==='stocktake') state.showStocktake = false;
+  if(name==='assetLog') { state.showAssetLog = false; }
+  if(name==='newAsset') { state.showNewAsset = false; state.editingAssetId = null; }
   render();
 };
 window.openTask = (id) => { state.selectedTask = id; render(); };
@@ -2843,20 +3187,76 @@ window.submitTask = async () => {
   state.showNewTask = false; render();
 };
 
+window.assetCatChange = (cat) => {
+  const tracked = ['high_value','fire_fighting','conservation'].includes(cat);
+  const sec = document.getElementById('a-tracking-section');
+  if (sec) sec.style.display = tracked ? '' : 'none';
+  const typeMap = {
+    high_value: ['4x4 / Game Viewer','Bakkie / LDV','Generator','Tractor','TLB / Loader','Golf Cart','Trailer','Implement','Other'],
+    fire_fighting: ['Bakkie Sakkie','Fire Beater','Drip Torch','Knapsack Pump','Fire Rake','Other'],
+    conservation: ['Brush Cutter','Weed Eater','Knapsack Sprayer','Chain Saw','Pruning Saw','Other'],
+    general_tools: ['Power Drill','Angle Grinder','Circular Saw','Jigsaw','Wrench Set','Hand Tools','Ladder','Other']
+  };
+  const sel = document.getElementById('a-type');
+  if (sel) sel.innerHTML = (typeMap[cat]||typeMap.general_tools).map(t=>`<option value="${t}">${t}</option>`).join('');
+  const tunit = document.getElementById('a-tunit');
+  if (tunit && cat === 'high_value') { /* keep as-is */ }
+};
+
+window.openAsset = (id) => { state.selectedAsset = id; render(); };
+window.closeAsset = () => { state.selectedAsset = null; render(); };
+window.openEditAsset = (id) => { state.editingAssetId = id; state.showNewAsset = true; render(); };
+window.openAssetLog = (id) => { state.selectedAsset = id; state.showAssetLog = true; render(); };
+window.setAssetFilter = (cat) => { state.assetCatFilter = cat; render(); };
+
 window.submitAsset = async () => {
   const name = document.getElementById('a-name')?.value?.trim();
   if (!name) { toast('Asset name is required', 'error'); return; }
-  await createAsset({
+  const data = {
     asset_name: name,
-    category: document.getElementById('a-cat')?.value,
-    status: document.getElementById('a-status')?.value,
+    asset_type: document.getElementById('a-type')?.value || null,
+    category: document.getElementById('a-cat')?.value || 'general_tools',
+    make_model: document.getElementById('a-model')?.value || null,
     serial_number: document.getElementById('a-serial')?.value || null,
-    value: document.getElementById('a-value')?.value || null,
-    usage_hours: document.getElementById('a-hours')?.value || 0,
-    last_service: document.getElementById('a-service')?.value || null,
+    supplier: document.getElementById('a-supplier')?.value || null,
+    storage_location: document.getElementById('a-loc')?.value || null,
+    status: document.getElementById('a-status')?.value || 'operational',
+    purchase_date: document.getElementById('a-pdate')?.value || null,
+    purchase_value: document.getElementById('a-pval')?.value || 0,
+    current_value: document.getElementById('a-cval')?.value || 0,
+    expected_life_years: document.getElementById('a-life')?.value || null,
+    warranty_expiry: document.getElementById('a-warranty')?.value || null,
+    tracking_unit: document.getElementById('a-tunit')?.value || 'hrs',
+    current_reading: document.getElementById('a-reading')?.value || 0,
+    service_interval_unit: document.getElementById('a-svcint')?.value || null,
+    last_service_date: document.getElementById('a-lsvc')?.value || null,
+    next_service_due: document.getElementById('a-nsvc')?.value || null,
     notes: document.getElementById('a-notes')?.value || null,
+  };
+  if (state.editingAssetId) {
+    await updateAsset(state.editingAssetId, data);
+  } else {
+    await createAsset(data);
+  }
+  state.showNewAsset = false; state.editingAssetId = null; render();
+};
+
+window.submitAssetLog = async () => {
+  const desc = document.getElementById('al-desc')?.value?.trim();
+  if (!desc) { toast('Description required', 'error'); return; }
+  if (!state.selectedAsset) { toast('No asset selected', 'error'); return; }
+  await createAssetLog({
+    asset_id: state.selectedAsset,
+    log_type: document.getElementById('al-type')?.value,
+    log_date: document.getElementById('al-date')?.value || new Date().toISOString().slice(0,10),
+    description: desc,
+    reading: document.getElementById('al-reading')?.value || null,
+    cost: document.getElementById('al-cost')?.value || 0,
+    done_by: document.getElementById('al-by')?.value || null,
+    next_due_reading: document.getElementById('al-nextdue')?.value || null,
+    notes: document.getElementById('al-notes')?.value || null,
   });
-  state.showNewAsset = false; render();
+  state.showAssetLog = false; render();
 };
 
 window.submitObs = async () => {
