@@ -714,8 +714,8 @@ async function loadReconItems(reconId) {
 
 async function loadAll() {
   state.loading = true; render();
-  await Promise.all([loadTasks(), loadAssets(), loadObs(), loadChemicals(), loadTaskLogs(),
-    loadChemUsage(), loadCostEntries(), loadStockItems(), loadStockMovements()]);
+  await Promise.all([loadTasks(), loadAssets(), loadAssetLogs(), loadObs(), loadChemicals(), loadTaskLogs(),
+    loadChemUsage(), loadCostEntries(), loadStockItems(), loadStockMovements(), loadSuppliers(), loadReconciliations()]);
   state.loading = false; render();
 }
 
@@ -1628,9 +1628,43 @@ function buildStock() {
         const hasLow = state.stockItems.filter(s=>s.category===cat&&Number(s.minimum_level)>0&&Number(s.stock_level)<Number(s.minimum_level)).length > 0;
         return `<button class="filter-btn ${state.stockCatFilter===cat?'active':''}" onclick="setStockFilter('${cat}')" style="${hasLow?'border-color:var(--red);color:var(--red)':''}">${CAT_LABELS[cat].toUpperCase()} (${n})</button>`;
       }).join('')}
+      <button class="filter-btn ${state.stockCatFilter==='suppliers'?'active':''}" onclick="setStockFilter('suppliers')" style="margin-left:auto">&#9671; SUPPLIERS (${state.suppliers.length})</button>
     </div>
 
-    <!-- Stock list -->
+    <!-- Stock list / Suppliers tab -->
+    ${state.stockCatFilter === 'suppliers' ? `
+    <div class="col-gap" style="gap:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px">SUPPLIER DIRECTORY</div>
+        <button class="btn btn-primary" style="font-size:11px;padding:5px 14px" onclick="showModal('supplier')">+ Add Supplier</button>
+      </div>
+      ${state.suppliers.length ? state.suppliers.map(s => `
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+            <div>
+              <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:6px">${escHtml(s.name)}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted);display:flex;flex-direction:column;gap:3px">
+                ${s.contact_person?`<span>Contact: ${escHtml(s.contact_person)}</span>`:''}
+                ${s.phone?`<span>&#128222; ${escHtml(s.phone)}</span>`:''}
+                ${s.email?`<span>&#9993; ${escHtml(s.email)}</span>`:''}
+                ${s.account_number?`<span>Acc: ${escHtml(s.account_number)}</span>`:''}
+                ${s.address?`<span>&#128204; ${escHtml(s.address)}</span>`:''}
+                ${s.notes?`<span style="color:var(--text-sec)">${escHtml(s.notes)}</span>`:''}
+              </div>
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">
+                ${state.stockItems.filter(i=>i.preferred_supplier_id===s.id).length} items
+              </div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:2px">
+                ${state.stockMovements.filter(m=>m.supplier_id===s.id).length} deliveries
+              </div>
+            </div>
+          </div>
+        </div>
+      `).join('') : `<div class="empty card">No suppliers added yet — click Add Supplier to get started</div>`}
+    </div>
+    ` : `
     <div class="col-gap" style="gap:8px">
       ${filtered.length ? filtered.map(s => {
         const col = CAT_COLORS[s.category]||'var(--text-muted)';
@@ -1703,27 +1737,7 @@ function buildStock() {
       </div>
     </div>` : ''}
 
-    <!-- Supplier directory -->
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div class="card-title" style="margin-bottom:0">&#9671; Supplier Directory</div>
-        <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="showModal('supplier')">+ Add Supplier</button>
-      </div>
-      ${state.suppliers.length ? `
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px">
-        ${state.suppliers.map(s => `
-          <div style="padding:10px 12px;background:var(--surface);border-radius:var(--r);border:1px solid var(--border)">
-            <div style="font-weight:700;font-size:13px;color:var(--text);margin-bottom:5px">${escHtml(s.name)}</div>
-            <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);display:flex;flex-direction:column;gap:2px">
-              ${s.contact_person?`<span>Contact: ${escHtml(s.contact_person)}</span>`:''}
-              ${s.phone?`<span>Tel: ${escHtml(s.phone)}</span>`:''}
-              ${s.email?`<span>${escHtml(s.email)}</span>`:''}
-              ${s.account_number?`<span>Acc: ${escHtml(s.account_number)}</span>`:''}
-              ${s.address?`<span>${escHtml(s.address)}</span>`:''}
-            </div>
-          </div>`).join('')}
-      </div>` : `<div class="empty" style="padding:16px 0">No suppliers added yet</div>`}
-    </div>
+
   </div>`;
 }
 
