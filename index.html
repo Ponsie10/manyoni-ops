@@ -402,11 +402,12 @@ const state = {
   showNewTask: false, showNewAsset: false, showNewObs: false,
   showNewChem: false, showLogWork: false, showChemUse: false,
   showCostEntry: false, showStockItem: false, showStockIn: false,
-  showStockOut: false, showOpCost: false, showSupplier: false, showStocktake: false,
+  showStockOut: false, showOpCost: false, showSupplier: false, showStocktake: false, showRecon: false,
   showAssetLog: false, showNewAsset: false,
   selectedTask: null, selectedChem: null, selectedStock: null, editingStockId: null, selectedAsset: null, editingAssetId: null,
   taskFilter: 'all', assetFilter: 'all', assetCatFilter: 'all', costCatFilter: '', stockCatFilter: 'all',
   stockSearch: '',
+  reconciliations: [], reconItems: [], viewingReconId: null,
   toasts: [],
 };
 
@@ -601,6 +602,36 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   movement_date DATE DEFAULT CURRENT_DATE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS stock_reconciliations (
+  id BIGSERIAL PRIMARY KEY,
+  period_label TEXT NOT NULL,
+  period_year INTEGER NOT NULL,
+  period_month INTEGER NOT NULL,
+  status TEXT DEFAULT 'draft',
+  finalised_at TIMESTAMPTZ,
+  finalised_by TEXT,
+  notes TEXT,
+  total_variance_value NUMERIC DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS stock_reconciliation_items (
+  id BIGSERIAL PRIMARY KEY,
+  reconciliation_id BIGINT REFERENCES stock_reconciliations(id),
+  stock_item_id BIGINT REFERENCES stock_items(id),
+  item_name TEXT,
+  category TEXT,
+  unit TEXT,
+  system_qty NUMERIC DEFAULT 0,
+  physical_qty NUMERIC,
+  variance NUMERIC GENERATED ALWAYS AS (COALESCE(physical_qty,0) - system_qty) STORED,
+  unit_cost NUMERIC DEFAULT 0,
+  variance_value NUMERIC GENERATED ALWAYS AS ((COALESCE(physical_qty,0) - system_qty) * unit_cost) STORED,
+  variance_reason TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
 `;
 
 async function initDB() {
@@ -673,6 +704,12 @@ async function loadStockMovements() {
 }
 async function loadSuppliers() {
   try { state.suppliers = await sb.get('suppliers?order=name.asc') || []; } catch(e) { state.suppliers = []; }
+}
+async function loadReconciliations() {
+  try { state.reconciliations = await sb.get('stock_reconciliations?order=period_year.desc,period_month.desc') || []; } catch(e) { state.reconciliations = []; }
+}
+async function loadReconItems(reconId) {
+  try { state.reconItems = await sb.get('stock_reconciliation_items?reconciliation_id=eq.'+reconId+'&order=category.asc,item_name.asc') || []; } catch(e) { state.reconItems = []; }
 }
 
 async function loadAll() {
@@ -763,6 +800,16 @@ async function createCostEntry(data) {
 
 async function createStockItem(data) {
   try {
+    // Always check for existing item by name before creating
+    const nameLower = (data.name||'').toLowerCase().trim();
+    const existing = state.stockItems.find(s => s.name.toLowerCase().trim() === nameLower);
+    if (existing) {
+      // Update existing rather than create duplicate
+      await sb.patch('stock_items?id=eq.'+existing.id, data);
+      toast('Existing item updated — no duplicate created');
+      await loadStockItems();
+      return existing;
+    }
     const res = await sb.post('stock_items', data);
     toast('Stock item created');
     await loadStockItems();
@@ -924,6 +971,7 @@ function buildSidebar() {
     { id:'assets', icon:'◧', label:'Assets' },
     { id:'environment', icon:'◉', label:'Ecology' },
     { id:'stock', icon:'◱', label:'Stock' },
+    { id:'reconciliation', icon:'◫', label:'Stock Take' },
     { id:'costs', icon:'◈', label:'Costs' },
     { id:'reports', icon:'◰', label:'Reports' },
   ];
@@ -972,7 +1020,7 @@ function buildTopbar() {
 }
 
 function buildPage() {
-  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: state.selectedAsset ? buildAssetDetail : buildAssets, environment: buildEcology, stock: buildStock, costs: buildCosts, reports: buildReports };
+  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: state.selectedAsset ? buildAssetDetail : buildAssets, environment: buildEcology, stock: buildStock, reconciliation: buildReconciliation, costs: buildCosts, reports: buildReports };
   if (state.page === 'chemicals') { state.page = 'stock'; state.stockCatFilter = 'chemicals'; }
   return (pages[state.page] || buildDashboard)();
 }
@@ -1624,6 +1672,7 @@ function buildStock() {
             <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="openStockIn(${s.id})">+ Receive</button>
             <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="openStockOut(${s.id})">&#8722; Issue</button>
             <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px;margin-left:auto" onclick="openEditStock(${s.id})">&#9998; Edit</button>
+            ${Number(s.stock_level) === 0 ? `<button class="btn btn-ghost" style="font-size:10px;padding:4px 10px;color:var(--red);border-color:color-mix(in srgb,var(--red) 30%,var(--border))" onclick="deleteStockItem(${s.id},'${escHtml(s.name).replace(/'/g,'\\&apos;')}')">&#215; Delete</button>` : ''}
           </div>
         </div>`;
       }).join('') : `<div class="empty card">No stock items ${state.stockCatFilter!=='all'?'in this category ':''}&mdash; click New Item to add</div>`}
@@ -1682,6 +1731,181 @@ function buildStock() {
 // ═══════════════════════════════════════
 // COSTS
 // ═══════════════════════════════════════
+// ═══════════════════════════════════════
+// RECONCILIATION
+// ═══════════════════════════════════════
+function buildReconciliation() {
+  const recs = state.reconciliations;
+  const draftRec = recs.find(r => r.status === 'draft');
+  const finalisedRecs = recs.filter(r => r.status === 'finalised');
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const REASONS = ['Damaged / written off','Lost / stolen','Counting error','Consumed but not issued','Supplier short delivery','Other'];
+
+  // If viewing a specific reconciliation detail
+  if (state.viewingReconId) {
+    const rec = recs.find(r => r.id === state.viewingReconId);
+    if (!rec) return '';
+    const items = state.reconItems;
+    const varItems = items.filter(i => Number(i.variance||0) !== 0);
+    const totalVarVal = items.reduce((s,i) => s + Number(i.variance_value||0), 0);
+    const isDraft = rec.status === 'draft';
+
+    return `
+    <div class="col-gap">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="btn btn-ghost" style="font-size:11px" onclick="closeReconDetail()">&#8592; Back</button>
+          <div>
+            <div class="section-h" style="font-size:18px;margin:0">${escHtml(rec.period_label)}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:${isDraft?'var(--orange)':'var(--green)'}">${rec.status.toUpperCase()}${rec.finalised_at?' — finalised '+fmtDate(rec.finalised_at):''}</div>
+          </div>
+        </div>
+        ${isDraft ? `
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" onclick="saveReconDraft()">Save Draft</button>
+          <button class="btn btn-primary" onclick="finaliseRecon(${rec.id})">&#10003; Finalise & Lock</button>
+        </div>` : ''}
+      </div>
+
+      <div class="grid-4">
+        ${statCard('Items Counted', items.length, 'total', 'var(--accent-hi)')}
+        ${statCard('Variances', varItems.length, 'items', varItems.length > 0 ? 'var(--orange)' : 'var(--green)')}
+        ${statCard('Variance Value', 'R'+Math.abs(totalVarVal).toLocaleString('en-ZA',{maximumFractionDigits:0}), totalVarVal < 0 ? 'loss' : 'gain', totalVarVal < 0 ? 'var(--red)' : 'var(--green)')}
+        ${statCard('Status', rec.status.toUpperCase(), '', isDraft ? 'var(--orange)' : 'var(--green)')}
+      </div>
+
+      ${varItems.length && !isDraft ? `
+      <div class="card" style="border-color:color-mix(in srgb,var(--orange) 40%,var(--border))">
+        <div class="card-title" style="color:var(--orange)">&#9650; Variance Summary</div>
+        ${varItems.map(i => {
+          const isShort = Number(i.variance) < 0;
+          return `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:color-mix(in srgb,${isShort?'var(--red)':'var(--green)'} 6%,transparent);border-radius:var(--r);margin-bottom:4px">
+            <div>
+              <span style="font-weight:600;font-size:13px;color:var(--text)">${escHtml(i.item_name)}</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-left:10px">${escHtml(i.variance_reason||'—')}</span>
+            </div>
+            <div style="text-align:right">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:${isShort?'var(--red)':'var(--green)'}">${isShort?'':'+'}${i.variance} ${i.unit}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">R${Number(i.variance_value).toLocaleString('en-ZA',{maximumFractionDigits:0})}</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>` : ''}
+
+      <!-- Count sheet -->
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+          <div class="card-title" style="margin:0">Count Sheet</div>
+          ${isDraft ? `<div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">Enter physical counts — variances calculate automatically</div>` : ''}
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead>
+              <tr style="background:var(--surface)">
+                <th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:8px 12px;text-align:left;border-bottom:2px solid var(--border);white-space:nowrap">ITEM</th>
+                <th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:8px 12px;text-align:left;border-bottom:2px solid var(--border)">CATEGORY</th>
+                <th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:8px 12px;text-align:right;border-bottom:2px solid var(--border)">SYSTEM QTY</th>
+                <th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:8px 12px;text-align:right;border-bottom:2px solid var(--border)">PHYSICAL COUNT</th>
+                <th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:8px 12px;text-align:right;border-bottom:2px solid var(--border)">VARIANCE</th>
+                <th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:8px 12px;text-align:right;border-bottom:2px solid var(--border)">VALUE</th>
+                <th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:8px 12px;text-align:left;border-bottom:2px solid var(--border)">REASON</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map((item, idx) => {
+                const phys = item.physical_qty !== null && item.physical_qty !== undefined ? Number(item.physical_qty) : null;
+                const variance = phys !== null ? phys - Number(item.system_qty) : null;
+                const varVal = variance !== null ? variance * Number(item.unit_cost||0) : null;
+                const hasVar = variance !== null && variance !== 0;
+                return `
+                <tr style="border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent);${hasVar?'background:color-mix(in srgb,var(--orange) 4%,transparent)':''}">
+                  <td style="padding:6px 12px;font-weight:600;color:var(--text)">${escHtml(item.item_name)}</td>
+                  <td style="padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">${escHtml(item.category||'')}</td>
+                  <td style="padding:6px 12px;font-family:'JetBrains Mono',monospace;text-align:right;color:var(--text-sec)">${item.system_qty} ${item.unit}</td>
+                  <td style="padding:4px 8px;text-align:right">
+                    ${isDraft
+                      ? `<input class="form-input" id="ri-${item.id}" type="number" step="0.01" value="${phys !== null ? phys : ''}" placeholder="count" style="width:80px;text-align:right;padding:4px 6px;font-size:12px" oninput="updateReconRow(${item.id},this.value,${idx})">`
+                      : `<span style="font-family:'JetBrains Mono',monospace;color:var(--text)">${phys !== null ? phys + ' ' + item.unit : '—'}</span>`}
+                  </td>
+                  <td style="padding:6px 12px;font-family:'JetBrains Mono',monospace;font-weight:700;text-align:right;color:${variance===null?'var(--text-muted)':variance<0?'var(--red)':variance>0?'var(--green)':'var(--text-sec)'}">
+                    <span id="rv-${item.id}">${variance !== null ? (variance > 0 ? '+' : '') + variance + ' ' + item.unit : '—'}</span>
+                  </td>
+                  <td style="padding:6px 12px;font-family:'JetBrains Mono',monospace;text-align:right;color:${varVal!==null&&varVal<0?'var(--red)':varVal!==null&&varVal>0?'var(--green)':'var(--text-muted)'}">
+                    <span id="rvv-${item.id}">${varVal !== null ? 'R'+Number(varVal).toLocaleString('en-ZA',{maximumFractionDigits:0}) : '—'}</span>
+                  </td>
+                  <td style="padding:4px 8px">
+                    ${isDraft && hasVar
+                      ? `<select class="form-select" id="rr-${item.id}" style="font-size:10px;padding:3px 4px" onchange="updateReconReason(${item.id},this.value)">
+                          <option value="">— Reason —</option>
+                          ${REASONS.map(r=>`<option value="${r}" ${item.variance_reason===r?'selected':''}>${r}</option>`).join('')}
+                        </select>`
+                      : `<span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">${escHtml(item.variance_reason||'')}</span>`}
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ── LIST VIEW ──
+  return `
+  <div class="col-gap">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px">
+      <div class="section-title" style="margin-bottom:0">
+        <div class="section-sub">— Monthly</div>
+        <div class="section-h">Stock Reconciliation</div>
+      </div>
+      ${!draftRec ? `<button class="btn btn-primary" onclick="startNewRecon()">+ New Stock Take</button>` : `<button class="btn btn-primary" onclick="openReconDetail(${draftRec.id})">Continue Draft — ${escHtml(draftRec.period_label)}</button>`}
+    </div>
+
+    <div class="grid-3">
+      ${statCard('Total Reconciliations', recs.length, 'completed', 'var(--accent-hi)')}
+      ${statCard('Draft', draftRec ? '1' : '0', 'in progress', draftRec ? 'var(--orange)' : 'var(--text-muted)')}
+      ${statCard('Finalised', finalisedRecs.length, 'locked', 'var(--green)')}
+    </div>
+
+    ${draftRec ? `
+    <div class="card" style="border-color:color-mix(in srgb,var(--orange) 40%,var(--border));background:color-mix(in srgb,var(--orange) 5%,var(--dark-mid))">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div class="card-title" style="color:var(--orange);margin-bottom:2px">&#9650; Draft in Progress — ${escHtml(draftRec.period_label)}</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">Started ${fmtDate(draftRec.created_at)} — not yet finalised or locked</div>
+        </div>
+        <button class="btn btn-primary" onclick="openReconDetail(${draftRec.id})">Continue &#8594;</button>
+      </div>
+    </div>` : ''}
+
+    ${finalisedRecs.length ? `
+    <div class="card">
+      <div class="card-title">&#10003; Finalised Reconciliations</div>
+      <div class="col-gap" style="gap:6px">
+        ${finalisedRecs.map(r => {
+          const varVal = Number(r.total_variance_value||0);
+          return `
+          <div class="log-row" style="cursor:pointer" onclick="openReconDetail(${r.id})">
+            <div style="display:flex;align-items:center;gap:12px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--green);background:color-mix(in srgb,var(--green) 12%,transparent);padding:2px 8px;border-radius:3px">LOCKED</span>
+              <div>
+                <div style="font-size:13px;font-weight:700;color:var(--text)">${escHtml(r.period_label)}</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">Finalised ${fmtDate(r.finalised_at)} ${r.finalised_by?'by '+escHtml(r.finalised_by):''}</div>
+              </div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:${varVal<0?'var(--red)':varVal>0?'var(--orange)':'var(--green)'}">
+                ${varVal === 0 ? 'No variance' : 'R'+Math.abs(varVal).toLocaleString('en-ZA',{maximumFractionDigits:0})+' '+(varVal<0?'loss':'gain')}
+              </div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : `<div class="empty card">No finalised reconciliations yet — start a new stock take above</div>`}
+  </div>`;
+}
+
 function buildCosts() {
   const cats = ['labour','materials','fuel','equipment','chemicals','repairs','services','other'];
   const catColors = { labour:'var(--green)', materials:'var(--savanna)', fuel:'var(--orange)', equipment:'var(--sky)', chemicals:'var(--red)', repairs:'var(--red-hi)', services:'var(--blue)', other:'var(--text-muted)' };
@@ -2852,6 +3076,7 @@ window.showModal = (name) => {
   if(name==='opCost') state.showOpCost = true;
   if(name==='supplier') state.showSupplier = true;
   if(name==='stocktake') { state.showStocktake = true; }
+  if(name==='recon') state.showRecon = true;
   if(name==='assetLog') state.showAssetLog = true;
   if(name==='newAsset') { state.showNewAsset = true; }
   render();
@@ -2871,6 +3096,7 @@ window.closeModal = (name) => {
   if(name==='opCost') state.showOpCost = false;
   if(name==='supplier') state.showSupplier = false;
   if(name==='stocktake') state.showStocktake = false;
+  if(name==='recon') state.showRecon = false;
   if(name==='assetLog') { state.showAssetLog = false; }
   if(name==='newAsset') { state.showNewAsset = false; state.editingAssetId = null; }
   render();
@@ -2903,6 +3129,155 @@ window.addStocktakeRow = () => {
     <td style="text-align:center"><input type="hidden" data-field="existing_id" value=""><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">new</span></td>
   `;
   tbody.appendChild(tr);
+};
+
+
+window.startNewRecon = async () => {
+  // Check no existing draft
+  if (state.reconciliations.find(r => r.status === 'draft')) {
+    toast('A draft reconciliation already exists — complete it first', 'error'); return;
+  }
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const year = now.getFullYear();
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const label = MONTHS[month-1] + ' ' + year;
+  try {
+    // Create reconciliation header
+    const res = await sb.post('stock_reconciliations', {
+      period_label: label, period_year: year, period_month: month, status: 'draft'
+    });
+    const rec = Array.isArray(res) ? res[0] : res;
+    if (!rec || !rec.id) { toast('Failed to create reconciliation', 'error'); return; }
+    // Snapshot all current stock items into reconciliation_items
+    const rows = state.stockItems.map(s => ({
+      reconciliation_id: rec.id,
+      stock_item_id: s.id,
+      item_name: s.name,
+      category: s.category,
+      unit: s.unit,
+      system_qty: Number(s.stock_level||0),
+      unit_cost: Number(s.current_unit_cost||0),
+      physical_qty: null,
+    }));
+    for (const row of rows) {
+      await sb.post('stock_reconciliation_items', row);
+    }
+    await loadReconciliations();
+    await loadReconItems(rec.id);
+    state.viewingReconId = rec.id;
+    navigate('reconciliation');
+    toast('Stock take started — enter physical counts');
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
+};
+
+window.openReconDetail = async (id) => {
+  state.viewingReconId = id;
+  await loadReconItems(id);
+  navigate('reconciliation');
+};
+
+window.closeReconDetail = () => {
+  state.viewingReconId = null;
+  state.reconItems = [];
+  render();
+};
+
+window.updateReconRow = async (itemId, physVal, idx) => {
+  const phys = physVal === '' ? null : parseFloat(physVal);
+  const item = state.reconItems.find(i => i.id === itemId);
+  if (!item) return;
+  // Update display inline without full re-render
+  const sysQty = Number(item.system_qty||0);
+  const variance = phys !== null ? phys - sysQty : null;
+  const varVal = variance !== null ? variance * Number(item.unit_cost||0) : null;
+  const vEl = document.getElementById('rv-'+itemId);
+  const vvEl = document.getElementById('rvv-'+itemId);
+  if (vEl) vEl.textContent = variance !== null ? (variance>0?'+':'')+variance.toFixed(2)+' '+item.unit : '—';
+  if (vvEl) vvEl.textContent = varVal !== null ? 'R'+varVal.toLocaleString('en-ZA',{maximumFractionDigits:0}) : '—';
+  // Show reason dropdown if variance exists
+  const rrEl = document.getElementById('rr-'+itemId);
+  if (rrEl) rrEl.style.display = (variance !== null && variance !== 0) ? '' : 'none';
+  // Save to state
+  item.physical_qty = phys;
+  item.variance = variance;
+  // Persist to DB (debounced via simple approach)
+  clearTimeout(window._reconSaveTimer);
+  window._reconSaveTimer = setTimeout(async () => {
+    try { await sb.patch('stock_reconciliation_items?id=eq.'+itemId, { physical_qty: phys }); } catch(e) {}
+  }, 800);
+};
+
+window.updateReconReason = async (itemId, reason) => {
+  const item = state.reconItems.find(i => i.id === itemId);
+  if (item) item.variance_reason = reason;
+  try { await sb.patch('stock_reconciliation_items?id=eq.'+itemId, { variance_reason: reason }); } catch(e) {}
+};
+
+window.saveReconDraft = async () => {
+  toast('Draft saved — all counts are saved automatically as you type');
+};
+
+window.finaliseRecon = async (reconId) => {
+  const rec = state.reconciliations.find(r => r.id === reconId);
+  if (!rec) return;
+  const items = state.reconItems;
+  const uncounted = items.filter(i => i.physical_qty === null || i.physical_qty === undefined);
+  if (uncounted.length > 0) {
+    if (!confirm(uncounted.length + ' item(s) have no physical count entered. They will be treated as zero variance. Continue?')) return;
+  }
+  const varItems = items.filter(i => i.physical_qty !== null && Number(i.physical_qty) !== Number(i.system_qty));
+  const by = prompt('Finalised by (your name):');
+  if (!by) return;
+  try {
+    // Write variance adjustments to stock_movements and correct stock levels
+    for (const item of varItems) {
+      const variance = Number(item.physical_qty) - Number(item.system_qty);
+      if (variance === 0) continue;
+      // Log adjustment movement
+      await sb.post('stock_movements', {
+        stock_item_id: item.stock_item_id,
+        movement_type: variance < 0 ? 'adjustment_out' : 'adjustment_in',
+        quantity: Math.abs(variance),
+        unit_cost: Number(item.unit_cost||0),
+        notes: 'Stock reconciliation — ' + (item.variance_reason||'variance'),
+        recorded_by: by,
+        movement_date: new Date().toISOString().slice(0,10)
+      });
+      // Correct stock level to physical count
+      await sb.patch('stock_items?id=eq.'+item.stock_item_id, {
+        stock_level: Number(item.physical_qty)
+      });
+      // Log cost entry for losses
+      if (variance < 0 && Number(item.unit_cost||0) > 0) {
+        await sb.post('cost_entries', {
+          category: 'materials',
+          description: 'Stock variance — ' + item.item_name + ' (' + (item.variance_reason||'reconciliation') + ')',
+          quantity: Math.abs(variance),
+          unit_cost: Number(item.unit_cost||0),
+          entry_date: new Date().toISOString().slice(0,10),
+          recorded_by: by,
+          source: 'reconciliation'
+        });
+      }
+    }
+    // Calculate total variance value
+    const totalVarVal = items.reduce((s,i) => {
+      if (i.physical_qty === null) return s;
+      return s + (Number(i.physical_qty) - Number(i.system_qty)) * Number(i.unit_cost||0);
+    }, 0);
+    // Lock the reconciliation
+    await sb.patch('stock_reconciliations?id=eq.'+reconId, {
+      status: 'finalised',
+      finalised_at: new Date().toISOString(),
+      finalised_by: by,
+      total_variance_value: totalVarVal
+    });
+    await Promise.all([loadReconciliations(), loadStockItems(), loadStockMovements(), loadCostEntries()]);
+    await loadReconItems(reconId);
+    toast('Reconciliation finalised and locked — stock levels corrected');
+    render();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
 };
 
 window.stRowCatChange = (sel) => {
@@ -3000,6 +3375,15 @@ window.submitStocktake = async () => {
 window.sinCatChange = (sel) => {
   const el = document.getElementById('sin-chem-fields');
   if (el) el.style.display = sel.value === 'chemicals' ? '' : 'none';
+};
+window.deleteStockItem = async (id, name) => {
+  if (!confirm('Delete "' + name + '"? This cannot be undone.')) return;
+  try {
+    await sb.req('DELETE', 'stock_items?id=eq.'+id);
+    toast('Item deleted');
+    await loadStockItems();
+    render();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
 };
 window.openStockIn  = (id) => { state.selectedStock = id; state.showStockIn = true; render(); };
 window.openEditStock = (id) => { state.editingStockId = id; state.showStockItem = true; render(); };
