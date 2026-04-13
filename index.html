@@ -834,7 +834,7 @@ async function createSupplier(data) {
 }
 
 // Receive stock: supplier tracked on movement record only. Current price = latest received price.
-async function receiveStock(itemId, qty, unitCost, supplierId, invoiceRef, recordedBy, notes) {
+async function receiveStock(itemId, qty, unitCost, supplierId, invoiceRef, recordedBy, notes, recDate) {
   try {
     const item = state.stockItems.find(s => s.id === itemId);
     if (!item) { toast('Item not found', 'error'); return; }
@@ -862,7 +862,7 @@ async function receiveStock(itemId, qty, unitCost, supplierId, invoiceRef, recor
       quantity: qty, unit_cost: unitCost,
       supplier: sup ? sup.name : null,
       recorded_by: recordedBy || null,
-      entry_date: new Date().toISOString().slice(0,10),
+      entry_date: recDate || new Date().toISOString().slice(0,10),
       source: 'stock_on_hand'
     });
     toast('Received ' + qty + ' ' + item.unit + ' of ' + item.name + ' — cost logged');
@@ -2724,122 +2724,145 @@ function buildSupplierModal() {
 }
 
 function buildStockInModal() {
-  const selId = state.selectedStock;
-  const sel = selId ? state.stockItems.find(s => s.id === selId) : null;
-  const isNew = !sel;
-  const isChem = sel ? sel.category === 'chemicals' : false;
+  const CAT_LABELS = {chemicals:'Chemicals',fuel:'Fuel',vehicle_generator_spares:'Vehicle & Generator Spares',electrical:'Electrical',plumbing:'Plumbing',paints_varnish:'Paints & Varnish',general_consumables:'General Consumables'};
   const supOpts = '<option value="">— Select supplier —</option>' + state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
+
+  // Group stock items by category
+  const grouped = {};
+  state.stockItems.forEach(s => {
+    const cat = s.category || 'general_consumables';
+    if (!grouped[cat]) grouped[cat] = [];
+    grouped[cat].push(s);
+  });
+
+  // Pre-select item if opened from a card
+  const preselId = state.selectedStock;
+
+  const tableRows = Object.entries(CAT_LABELS).map(([cat, catLabel]) => {
+    const items = grouped[cat] || [];
+    if (!items.length) return '';
+    return `
+      <tr style="background:var(--surface)">
+        <td colspan="5" style="padding:8px 10px;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:1px;color:var(--text-muted);border-bottom:1px solid var(--border);border-top:2px solid var(--border)">${catLabel.toUpperCase()}</td>
+      </tr>
+      ${items.map(s => {
+        const isPresel = s.id === preselId;
+        return `
+        <tr class="grn-row" data-id="${s.id}" data-unit="${escHtml(s.unit)}" data-cost="${s.current_unit_cost||0}" style="${isPresel?'background:color-mix(in srgb,var(--accent) 6%,transparent)':''}">
+          <td style="padding:5px 8px">
+            <div style="font-size:12px;font-weight:${isPresel?'700':'500'};color:var(--text)">${escHtml(s.name)}</div>
+            ${s.supplier_item_id?`<div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted)">${escHtml(s.supplier_item_id)}</div>`:''}
+          </td>
+          <td style="padding:5px 6px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);white-space:nowrap">
+            ${s.stock_level} ${s.unit}
+          </td>
+          <td style="padding:5px 4px">
+            <input class="grn-input" type="number" step="0.01" min="0"
+              id="grn-qty-${s.id}" placeholder="—"
+              value="${isPresel?'':''}"
+              oninput="grnCalc()"
+              style="width:75px;text-align:right">
+          </td>
+          <td style="padding:5px 4px">
+            <input class="grn-input" type="number" step="0.01" min="0"
+              id="grn-cost-${s.id}"
+              value="${Number(s.current_unit_cost||0).toFixed(2)}"
+              oninput="grnCalc()"
+              style="width:80px;text-align:right">
+          </td>
+          <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:var(--savanna)" id="grn-line-${s.id}">—</td>
+        </tr>`;
+      }).join('')}`;
+  }).join('');
 
   return `
   <div class="modal-overlay" onclick="if(event.target===this)closeModal('stockIn')">
-    <div class="modal" style="width:560px;max-height:90vh;overflow-y:auto">
-      <div class="modal-title">&#9701; ${isNew ? 'Receive New Item' : 'Receive Stock'}</div>
+    <div class="modal" style="width:min(96vw,780px);max-height:92vh;display:flex;flex-direction:column">
+      <style>
+        .grn-input{background:var(--surface);border:1px solid transparent;border-radius:4px;padding:4px 6px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;width:100%;box-sizing:border-box}
+        .grn-input:focus{border-color:var(--accent);outline:none;background:var(--dark-mid)}
+        .grn-row:hover td{background:color-mix(in srgb,var(--accent) 3%,transparent)}
+        .grn-table{width:100%;border-collapse:collapse}
+        .grn-table th{font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.8px;color:var(--text-muted);padding:7px 8px;text-align:left;background:var(--surface);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:1}
+        .grn-table th:nth-child(3),.grn-table th:nth-child(4),.grn-table th:nth-child(5){text-align:right}
+      </style>
 
-      ${isNew ? `
-      <div style="background:color-mix(in srgb,var(--accent) 8%,transparent);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);border-radius:var(--r);padding:9px 13px;margin-bottom:14px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent)">
-        NEW ITEM &mdash; details saved to stock register on first receipt
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="flex:2"><label class="form-label">Item Name *</label>
-          <input class="form-input" id="sin-name" placeholder="e.g. Diesel, 25A Breaker" value="${escHtml(state.stockSearch||'')}">
-        </div>
-        <div class="form-group"><label class="form-label">Supplier Item ID</label>
-          <input class="form-input" id="sin-sid" placeholder="Code on slip">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group"><label class="form-label">Category *</label>
-          <select class="form-select" id="sin-cat" onchange="sinCatChange(this)">
-            ${Object.entries({chemicals:'Chemicals',fuel:'Fuel',vehicle_generator_spares:'Vehicle & Generator Spares',electrical:'Electrical',plumbing:'Plumbing',paints_varnish:'Paints & Varnish',general_consumables:'General Consumables'}).map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-group"><label class="form-label">Unit</label>
-          <select class="form-select" id="sin-unit">
-            ${['L','kg','m','unit','box','roll','bag','tin','pair'].map(u=>`<option value="${u}">${u}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group"><label class="form-label">Minimum Level</label>
-          <input class="form-input" id="sin-min" type="number" step="0.1" value="0">
-        </div>
-        <div class="form-group"><label class="form-label">Storage Location</label>
-          <input class="form-input" id="sin-loc" placeholder="e.g. Workshop storeroom">
-        </div>
-      </div>
-      <div id="sin-chem-fields" style="display:none">
-        <div style="border-top:1px solid var(--border);margin:12px 0;padding-top:12px">
-          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">CHEMICAL SAFETY</div>
-          <div class="form-group"><label class="form-label">PPE Required</label>
-            <input class="form-input" id="sin-ppe" placeholder="e.g. Gloves, goggles, respirator">
+      <!-- Header -->
+      <div style="flex-shrink:0;padding-bottom:12px;border-bottom:1px solid var(--border)">
+        <div class="modal-title" style="margin-bottom:12px">&#9701; Goods Received Note</div>
+        <div class="form-row" style="margin:0;gap:10px">
+          <div class="form-group" style="flex:2;margin:0"><label class="form-label">Supplier *</label>
+            <select class="form-select" id="grn-sup">${supOpts}</select>
           </div>
-          <div class="form-group"><label class="form-label">SDS URL</label>
-            <input class="form-input" id="sin-sds" placeholder="https://supplier.com/sds/product.html" type="url">
+          <div class="form-group" style="flex:2;margin:0"><label class="form-label">Invoice Number</label>
+            <input class="form-input" id="grn-inv" placeholder="Invoice / delivery ref">
+          </div>
+          <div class="form-group" style="flex:1;margin:0"><label class="form-label">Date</label>
+            <input class="form-input" id="grn-date" type="date" value="${new Date().toISOString().slice(0,10)}">
           </div>
         </div>
-      </div>
-      ` : `
-      <div style="background:var(--surface);border-radius:var(--r);padding:12px 14px;margin-bottom:14px;border:1px solid var(--border)">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-          <span style="font-size:14px;font-weight:700;color:var(--text)">${escHtml(sel.name)}</span>
-          ${sel.supplier_item_id?`<span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);background:var(--surface-hi);padding:1px 6px;border-radius:3px">${escHtml(sel.supplier_item_id)}</span>`:''}
-        </div>
-        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap">
-          <span>In stock: <strong style="color:var(--text)">${sel.stock_level} ${sel.unit}</strong></span>
-          <span>Min: ${sel.minimum_level} ${sel.unit}</span>
-          <span>Last price: <strong style="color:var(--savanna)">R${Number(sel.current_unit_cost||0).toFixed(2)}/${sel.unit}</strong></span>
-          ${sel.storage_location?`<span>&#128204; ${escHtml(sel.storage_location)}</span>`:''}
-          ${isChem && sel.ppe_required?`<span style="color:var(--orange)">PPE: ${escHtml(sel.ppe_required)}</span>`:''}
-          ${isChem && sel.sds_ref?`<span><a href="${escHtml(sel.sds_ref)}" target="_blank" style="color:var(--sky)">SDS &#8599;</a></span>`:''}
-        </div>
-      </div>
-      <input type="hidden" id="sin-name" value="${escHtml(sel.name)}">
-      <input type="hidden" id="sin-sid" value="${escHtml(sel.supplier_item_id||'')}">
-      <input type="hidden" id="sin-cat" value="${escHtml(sel.category)}">
-      <input type="hidden" id="sin-unit" value="${escHtml(sel.unit)}">
-      <input type="hidden" id="sin-min" value="${sel.minimum_level}">
-      <input type="hidden" id="sin-loc" value="${escHtml(sel.storage_location||'')}">
-      <input type="hidden" id="sin-ppe" value="${escHtml(sel.ppe_required||'')}">
-      <input type="hidden" id="sin-sds" value="${escHtml(sel.sds_ref||'')}">
-      `}
-
-      <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:${isNew?'4px':'0'}">
-        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">DELIVERY</div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">Qty Received *</label>
-            <input class="form-input" id="sin-qty" type="number" step="0.01" placeholder="0" oninput="calcStockInTotal()">
+        <div class="form-row" style="margin-top:8px;gap:10px">
+          <div class="form-group" style="flex:2;margin:0"><label class="form-label">Received By</label>
+            <input class="form-input" id="grn-by" placeholder="Your name">
           </div>
-          <div class="form-group"><label class="form-label">Unit Cost (R) *</label>
-            <input class="form-input" id="sin-cost" type="number" step="0.01"
-              value="${sel?Number(sel.current_unit_cost||0).toFixed(2):''}"
-              placeholder="0.00" oninput="calcStockInTotal()">
+          <div class="form-group" style="flex:2;margin:0"><label class="form-label">Notes</label>
+            <input class="form-input" id="grn-notes" placeholder="Delivery notes, condition, shortages...">
           </div>
-        </div>
-        <div style="background:var(--surface);border-radius:var(--r);padding:9px 13px;margin-bottom:12px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-sec)">
-          Total: <span id="sin-total" style="color:var(--accent-hi);font-weight:700">R0.00</span>
-          <span style="color:var(--text-muted);font-size:10px;margin-left:8px">goes to Stock on Hand, not cost, until issued</span>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">Supplier</label>
-            <select class="form-select" id="sin-sup">${supOpts}</select>
-          </div>
-          <div class="form-group"><label class="form-label">Invoice / Ref</label>
-            <input class="form-input" id="sin-inv" placeholder="Invoice number">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">Received By</label>
-            <input class="form-input" id="sin-by" placeholder="Your name">
-          </div>
-          <div class="form-group"><label class="form-label">Notes</label>
-            <input class="form-input" id="sin-notes" placeholder="Delivery notes">
-          </div>
+          <div class="form-group" style="flex:1;margin:0"></div>
         </div>
       </div>
 
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
-        <button class="btn btn-ghost" onclick="closeModal('stockIn')">Cancel</button>
-        <button class="btn btn-primary" onclick="submitStockIn()">${isNew?'Register & Receive':'Confirm Receipt'}</button>
+      <!-- Stock table -->
+      <div style="overflow:auto;flex:1;margin:10px 0">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-bottom:6px">
+          Enter quantities and costs for items received. Leave blank to skip. Costs default to last received price.
+        </div>
+        <table class="grn-table">
+          <thead>
+            <tr>
+              <th>ITEM</th>
+              <th>IN STOCK</th>
+              <th style="text-align:right">QTY RECEIVED</th>
+              <th style="text-align:right">UNIT COST (R)</th>
+              <th style="text-align:right">LINE TOTAL</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+          <!-- New items appended here -->
+          <tbody id="grn-new-items"></tbody>
+        </table>
+        <!-- Add new item row -->
+        <div style="margin-top:8px">
+          <button class="btn btn-ghost" style="font-size:11px;width:100%;border-style:dashed" onclick="grnAddNewItem()">+ Add New Stock Item to This Delivery</button>
+        </div>
+      </div>
+
+      <!-- Add New Item inline -->
+      <div style="flex-shrink:0;border-top:2px solid var(--border);padding-top:14px;margin-top:4px" id="grn-new-section">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px">NEW ITEMS ON THIS INVOICE</div>
+          <button class="btn btn-ghost" style="font-size:10px;padding:4px 12px" onclick="grnAddNewRow()">+ Add New Item</button>
+        </div>
+        <div id="grn-new-rows" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+
+      <!-- Totals footer -->
+      <div style="flex-shrink:0;border-top:2px solid var(--border);padding-top:12px;margin-top:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">
+            Items entered: <span id="grn-count" style="color:var(--text);font-weight:700">0</span>
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            Invoice total should match:
+          </div>
+          <div style="display:flex;align-items:baseline;gap:8px">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-muted)">TOTAL VALUE RECEIVED</span>
+            <span id="grn-total" style="font-family:'JetBrains Mono',monospace;font-size:24px;font-weight:800;color:var(--accent-hi)">R0.00</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+          <button class="btn btn-ghost" onclick="closeModal('stockIn')">Cancel</button>
+          <button class="btn btn-primary" id="grn-submit-btn" onclick="submitGRN()">Receive & Log All</button>
+        </div>
       </div>
     </div>
   </div>`;
@@ -3444,48 +3467,175 @@ window.submitSupplier = async () => {
   state.showSupplier = false; render();
 };
 
-window.submitStockIn = async () => {
-  const qty  = document.getElementById('sin-qty')?.value;
-  const cost = document.getElementById('sin-cost')?.value;
-  if (!qty || !cost) { toast('Quantity and unit cost are required','error'); return; }
-  const supVal = document.getElementById('sin-sup')?.value;
-  let itemId = state.selectedStock;
-  if (!itemId) {
-    // New item — create stock record first
-    const name = document.getElementById('sin-name')?.value?.trim();
-    if (!name) { toast('Item name is required','error'); return; }
-    // Duplicate check — if name matches existing item, use that
-    const nameLower = name.toLowerCase();
-    const dup = state.stockItems.find(s => s.name.toLowerCase() === nameLower);
-    if (dup) {
-      toast('Item "'+name+'" already exists — receiving into existing stock','success');
-      itemId = dup.id;
-    } else {
-      const created = await createStockItem({
-        name,
-        supplier_item_id: document.getElementById('sin-sid')?.value || null,
-        category: document.getElementById('sin-cat')?.value,
-        unit: document.getElementById('sin-unit')?.value,
-        minimum_level: document.getElementById('sin-min')?.value || 0,
-        stock_level: 0,
-        current_unit_cost: cost,
-        storage_location: document.getElementById('sin-loc')?.value || null,
-        ppe_required: document.getElementById('sin-ppe')?.value || null,
-        sds_ref: document.getElementById('sin-sds')?.value || null,
-      });
-      if (!created || !created.id) { toast('Failed to create stock item','error'); return; }
-      itemId = created.id;
-    }
-  }
-  await receiveStock(
-    itemId, qty, cost,
-    supVal ? Number(supVal) : null,
-    document.getElementById('sin-inv')?.value,
-    document.getElementById('sin-by')?.value,
-    document.getElementById('sin-notes')?.value
-  );
-  state.showStockIn = false; state.selectedStock = null; render();
+window.grnCalc = () => {
+  let total = 0; let count = 0;
+  // Existing stock rows
+  document.querySelectorAll('.grn-row').forEach(row => {
+    const id = row.dataset.id;
+    const qty  = parseFloat(document.getElementById('grn-qty-'+id)?.value||0);
+    const cost = parseFloat(document.getElementById('grn-cost-'+id)?.value||0);
+    const line = qty * cost;
+    const lineEl = document.getElementById('grn-line-'+id);
+    if (lineEl) lineEl.textContent = qty > 0 ? 'R'+line.toLocaleString('en-ZA',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—';
+    if (qty > 0) { total += line; count++; }
+  });
+  // New item rows
+  document.querySelectorAll('.grn-new-row').forEach(row => {
+    const idx  = row.dataset.idx;
+    const qty  = parseFloat(document.getElementById('grnn-qty-'+idx)?.value||0);
+    const cost = parseFloat(document.getElementById('grnn-cost-'+idx)?.value||0);
+    const line = qty * cost;
+    const lineEl = document.getElementById('grnn-line-'+idx);
+    if (lineEl) lineEl.textContent = qty > 0 ? 'R'+line.toLocaleString('en-ZA',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—';
+    if (qty > 0) { total += line; count++; }
+  });
+  const tot = document.getElementById('grn-total');
+  const cnt = document.getElementById('grn-count');
+  if (tot) tot.textContent = 'R'+total.toLocaleString('en-ZA',{minimumFractionDigits:2,maximumFractionDigits:2});
+  if (cnt) cnt.textContent = count;
 };
+
+window._grnNewIdx = 0;
+window.grnAddNewItem = () => {
+  const tbody = document.getElementById('grn-new-items');
+  if (!tbody) return;
+  const idx = window._grnNewIdx++;
+  const catOpts = Object.entries({chemicals:'Chemicals',fuel:'Fuel',vehicle_generator_spares:'Vehicle & Generator Spares',electrical:'Electrical',plumbing:'Plumbing',paints_varnish:'Paints & Varnish',general_consumables:'General Consumables'}).map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
+  const unitOpts = ['L','kg','m','unit','box','roll','bag','tin','pair'].map(u=>`<option value="${u}">${u}</option>`).join('');
+
+  // Category header row on first new item
+  if (idx === 0) {
+    const hdr = document.createElement('tr');
+    hdr.style.background = 'var(--surface)';
+    hdr.innerHTML = `<td colspan="5" style="padding:8px 10px;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:1px;color:var(--accent);border-bottom:1px solid var(--border);border-top:2px solid var(--border)">NEW ITEMS — ADDED THIS DELIVERY</td>`;
+    tbody.appendChild(hdr);
+  }
+
+  const tr = document.createElement('tr');
+  tr.className = 'grn-new-row';
+  tr.dataset.idx = idx;
+  tr.innerHTML = `
+    <td colspan="2" style="padding:4px 6px">
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <input class="grn-input" id="grnn-name-${idx}" placeholder="Item name *" style="font-weight:600">
+        <div style="display:flex;gap:4px">
+          <input class="grn-input" id="grnn-sid-${idx}" placeholder="Supplier item ID" style="flex:1;font-size:10px">
+          <select class="grn-input" id="grnn-cat-${idx}" style="flex:1;font-size:10px;padding:3px 4px" onchange="grnCheckChem(${idx},this.value)">${catOpts}</select>
+          <select class="grn-input" id="grnn-unit-${idx}" style="width:55px;font-size:10px;padding:3px 4px">${unitOpts}</select>
+        </div>
+        <div style="display:flex;gap:4px">
+          <input class="grn-input" id="grnn-loc-${idx}" placeholder="Storage location" style="flex:1;font-size:10px">
+          <input class="grn-input" id="grnn-min-${idx}" type="number" step="0.1" placeholder="Min level" style="width:70px;font-size:10px">
+        </div>
+        <div id="grnn-chem-${idx}" style="display:none;flex-direction:column;gap:4px">
+          <input class="grn-input" id="grnn-ppe-${idx}" placeholder="PPE required (e.g. Gloves, mask)" style="font-size:10px">
+          <input class="grn-input" id="grnn-sds-${idx}" placeholder="SDS URL (https://...)" style="font-size:10px">
+        </div>
+      </div>
+    </td>
+    <td style="padding:4px"><input class="grn-input" type="number" step="0.01" id="grnn-qty-${idx}" placeholder="Qty" oninput="grnCalc()" style="width:75px;text-align:right"></td>
+    <td style="padding:4px"><input class="grn-input" type="number" step="0.01" id="grnn-cost-${idx}" placeholder="Unit cost" oninput="grnCalc()" style="width:80px;text-align:right"></td>
+    <td style="padding:4px 8px;text-align:right">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--savanna)" id="grnn-line-${idx}">—</div>
+      <button onclick="grnRemoveNew(${idx})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:2px;margin-top:2px" title="Remove">&#215;</button>
+    </td>`;
+  tbody.appendChild(tr);
+  document.getElementById('grnn-name-'+idx)?.focus();
+};
+
+window.grnCheckChem = (idx, val) => {
+  const el = document.getElementById('grnn-chem-'+idx);
+  if (el) el.style.display = val === 'chemicals' ? 'flex' : 'none';
+};
+
+window.grnRemoveNew = (idx) => {
+  const row = document.querySelector('.grn-new-row[data-idx="'+idx+'"]');
+  if (row) row.remove();
+  grnCalc();
+};
+
+window.submitGRN = async () => {
+  const supVal = document.getElementById('grn-sup')?.value;
+  const invRef  = document.getElementById('grn-inv')?.value?.trim();
+  const recDate = document.getElementById('grn-date')?.value;
+  const recBy   = document.getElementById('grn-by')?.value?.trim();
+  const notes   = document.getElementById('grn-notes')?.value?.trim();
+  const rows = document.querySelectorAll('.grn-row');
+  const btn = document.getElementById('grn-submit-btn');
+
+  // Collect all rows with qty > 0
+  const toReceive = [];
+  rows.forEach(row => {
+    const id = Number(row.dataset.id);
+    const qty = parseFloat(document.getElementById('grn-qty-'+id)?.value||0);
+    const cost = parseFloat(document.getElementById('grn-cost-'+id)?.value||0);
+    if (qty > 0) toReceive.push({ id, qty, cost });
+  });
+
+  // Collect new items
+  const newRows = document.querySelectorAll('.grn-new-row');
+  const newItems = [];
+  newRows.forEach(row => {
+    const idx  = row.dataset.idx;
+    const name = document.getElementById('grnn-name-'+idx)?.value?.trim();
+    const qty  = parseFloat(document.getElementById('grnn-qty-'+idx)?.value||0);
+    const cost = parseFloat(document.getElementById('grnn-cost-'+idx)?.value||0);
+    if (!name || qty <= 0) return;
+    newItems.push({
+      idx, name, qty, cost,
+      supplier_item_id: document.getElementById('grnn-sid-'+idx)?.value||null,
+      category: document.getElementById('grnn-cat-'+idx)?.value||'general_consumables',
+      unit: document.getElementById('grnn-unit-'+idx)?.value||'unit',
+      storage_location: document.getElementById('grnn-loc-'+idx)?.value||null,
+      minimum_level: parseFloat(document.getElementById('grnn-min-'+idx)?.value||0),
+      ppe_required: document.getElementById('grnn-ppe-'+idx)?.value||null,
+      sds_ref: document.getElementById('grnn-sds-'+idx)?.value||null,
+    });
+  });
+
+  if (!toReceive.length && !newItems.length) { toast('No quantities entered — nothing to receive','error'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
+  let saved = 0; let errors = 0;
+
+  // Process existing stock items
+  for (const row of toReceive) {
+    try {
+      await receiveStock(row.id, row.qty, row.cost,
+        supVal ? Number(supVal) : null, invRef||null, recBy||null, notes||null, recDate||null);
+      saved++;
+    } catch(e) { errors++; console.error('GRN row failed', row.id, e); }
+  }
+
+  // Process new items — create then receive
+  for (const ni of newItems) {
+    try {
+      const created = await createStockItem({
+        name: ni.name,
+        supplier_item_id: ni.supplier_item_id,
+        category: ni.category,
+        unit: ni.unit,
+        minimum_level: ni.minimum_level,
+        stock_level: 0,
+        current_unit_cost: ni.cost,
+        storage_location: ni.storage_location,
+        ppe_required: ni.ppe_required,
+        sds_ref: ni.sds_ref,
+      });
+      if (created && created.id) {
+        await receiveStock(created.id, ni.qty, ni.cost,
+          supVal ? Number(supVal) : null, invRef||null, recBy||null, notes||null, recDate||null);
+        saved++;
+      }
+    } catch(e) { errors++; console.error('GRN new item failed', ni.name, e); }
+  }
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Receive & Log All'; }
+  state.showStockIn = false; state.selectedStock = null;
+  toast(saved + ' item' + (saved!==1?'s':'') + ' received' + (errors>0?' ('+errors+' errors)':''));
+  render();
+};
+
 
 window.submitStockOut = async () => {
   const itemId = Number(document.getElementById('sout-item')?.value);
