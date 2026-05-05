@@ -954,6 +954,7 @@ function buildApp() {
   ${state.showStockOut ? buildStockOutModal() : ''}
   ${state.showOpCost ? buildOpCostModal() : ''}
   ${state.showSupplier ? buildSupplierModal() : ''}
+  ${state.showCostCentres ? buildCostCentresModal() : ''}
   ${state.showAssetLog ? buildAssetLogModal() : ''}
   ${state.showStocktake ? buildStocktakeModal() : ''}
   ${state.selectedTask ? buildTaskDetail() : ''}
@@ -1108,6 +1109,20 @@ function buildDashboard() {
       <div class="welcome-h">Operations Dashboard</div>
       <div class="welcome-date">${now.toLocaleDateString('en-ZA',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</div>
     </div>
+
+    ${state.costCentres.length === 0 ? `
+    <div class="card" style="border-color:color-mix(in srgb,var(--accent) 40%,var(--border));background:color-mix(in srgb,var(--accent) 6%,var(--dark-mid))">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent);letter-spacing:1px;margin-bottom:4px">FIRST TIME SETUP</div>
+          <div style="font-size:13px;color:var(--text);font-weight:600">Cost centres not set up yet</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:3px">
+            Cost centres are required for cost tracking and financial reporting. Click to create the default set.
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="seedCostCentres()">Create Default Cost Centres</button>
+      </div>
+    </div>` : ''}
 
     <!-- Critical alerts — always visible -->
     ${critAlerts.length || highAlerts.length ? `
@@ -2148,6 +2163,7 @@ function buildCosts() {
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-ghost" onclick="showModal('opCost')">+ Repair / Service</button>
+        <button class="btn btn-ghost" onclick="showModal('costCentres')">&#9672; Cost Centres</button>
         <button class="btn btn-primary" onclick="showModal('costEntry')">+ Direct Cost</button>
       </div>
     </div>
@@ -2695,6 +2711,46 @@ function buildLogWorkModal() {
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
         <button class="btn btn-ghost" onclick="closeModal('logWork')">Cancel</button>
         <button class="btn btn-primary" onclick="submitLog()">Save Log</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildCostCentresModal() {
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal('costCentres')">
+    <div class="modal" style="width:500px">
+      <div class="modal-title">&#9672; Cost Centres</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-bottom:14px">
+        Cost centres are used to allocate costs across departments for financial reporting.
+      </div>
+
+      ${state.costCentres.length === 0 ? `
+      <div style="text-align:center;padding:20px 0">
+        <div style="font-size:13px;color:var(--text-sec);margin-bottom:14px">No cost centres yet</div>
+        <button class="btn btn-primary" onclick="seedCostCentres()">Create Default Cost Centres</button>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:8px">
+          Creates: Maintenance, Farm, Bar, Kitchen, Housekeeping,<br>Guest Delights, Conservation, Administration, Vehicle & Transport
+        </div>
+      </div>` : `
+      <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:14px">
+        ${state.costCentres.map(cc => `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--surface);border-radius:var(--r);border:1px solid var(--border)">
+            <span style="font-size:13px;color:var(--text);font-weight:600">${escHtml(cc.name)}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted)">#${cc.id}</span>
+          </div>`).join('')}
+      </div>`}
+
+      <div style="border-top:1px solid var(--border);padding-top:12px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-bottom:8px">ADD COST CENTRE</div>
+        <div style="display:flex;gap:8px">
+          <input class="form-input" id="cc-name" placeholder="e.g. Spa, Curio Shop, Security" style="flex:1">
+          <button class="btn btn-primary" style="white-space:nowrap" onclick="addCostCentre()">+ Add</button>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-ghost" onclick="closeModal('costCentres')">Close</button>
       </div>
     </div>
   </div>`;
@@ -3304,6 +3360,7 @@ window.showModal = (name) => {
   if(name==='supplier') state.showSupplier = true;
   if(name==='stocktake') { state.showStocktake = true; }
   if(name==='recon') state.showRecon = true;
+  if(name==='costCentres') state.showCostCentres = true;
   if(name==='assetLog') state.showAssetLog = true;
   if(name==='newAsset') { state.showNewAsset = true; }
   render();
@@ -3324,6 +3381,7 @@ window.closeModal = (name) => {
   if(name==='supplier') state.showSupplier = false;
   if(name==='stocktake') state.showStocktake = false;
   if(name==='recon') state.showRecon = false;
+  if(name==='costCentres') state.showCostCentres = false;
   if(name==='assetLog') { state.showAssetLog = false; }
   if(name==='newAsset') { state.showNewAsset = false; state.editingAssetId = null; }
   render();
@@ -3618,6 +3676,21 @@ window.openStockOut = (id) => { state.selectedStock = id; state.showStockOut = t
 window.setStockFilter = (cat) => { state.stockCatFilter = cat; render(); };
 
 // Seed default cost centres if none exist
+window.addCostCentre = async () => {
+  const name = document.getElementById('cc-name')?.value?.trim();
+  if (!name) { toast('Name required','error'); return; }
+  const exists = state.costCentres.find(cc => cc.name.toLowerCase() === name.toLowerCase());
+  if (exists) { toast('Cost centre already exists','error'); return; }
+  try {
+    await sb.post('cost_centres', { name });
+    toast('Cost centre added');
+    await loadCostCentres();
+    const el = document.getElementById('cc-name');
+    if (el) el.value = '';
+    render();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
+};
+
 window.seedCostCentres = async () => {
   if (state.costCentres.length > 0) return;
   const defaults = ['Maintenance','Farm','Bar','Kitchen','Housekeeping','Guest Delights','Conservation','Administration','Vehicle & Transport'];
