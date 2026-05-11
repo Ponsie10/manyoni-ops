@@ -3952,8 +3952,19 @@ window.grnAddNewItem = () => {
   const tbody = document.getElementById('grn-new-items');
   if (!tbody) return;
   const idx = window._grnNewIdx++;
-  const catOpts = Object.entries({chemicals:'Chemicals',fuel:'Fuel',vehicle_generator_spares:'Vehicle & Generator Spares',electrical:'Electrical',plumbing:'Plumbing',paints_varnish:'Paints & Varnish',general_consumables:'General Consumables'}).map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
-  const unitOpts = ['L','kg','m','unit','box','roll','bag','tin','pair'].map(u=>`<option value="${u}">${u}</option>`).join('');
+
+  const catOpts = Object.entries({
+    chemicals:'Chemicals',fuel:'Fuel',vehicle_generator_spares:'Vehicle & Generator Spares',
+    electrical:'Electrical',plumbing:'Plumbing',paints_varnish:'Paints & Varnish',
+    general_consumables:'General Consumables',ppe_uniform:'PPE & Uniform',
+    kitchen:'Kitchen',bar:'Bar',housekeeping:'Housekeeping',
+    guest_amenities:'Guest Amenities',tools_equipment:'Tools & Equipment',stationery:'Stationery'
+  }).map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
+
+  const unitOpts = ['L','kg','m','unit','box','roll','bag','tin','pair','set','pack'].map(u=>`<option value="${u}">${u}</option>`).join('');
+
+  const locOpts = '<option value="">— Storage location —</option>' +
+    state.storeLocations.map(s=>`<option value="${escHtml(s.name)}">${escHtml(s.name)}</option>`).join('');
 
   // Category header row on first new item
   if (idx === 0) {
@@ -3972,12 +3983,12 @@ window.grnAddNewItem = () => {
         <input class="grn-input" id="grnn-name-${idx}" placeholder="Item name *" style="font-weight:600">
         <div style="display:flex;gap:4px">
           <input class="grn-input" id="grnn-sid-${idx}" placeholder="Supplier item ID" style="flex:1;font-size:10px">
-          <select class="grn-input" id="grnn-cat-${idx}" style="flex:1;font-size:10px;padding:3px 4px" onchange="grnCheckChem(${idx},this.value)">${catOpts}</select>
-          <select class="grn-input" id="grnn-unit-${idx}" style="width:55px;font-size:10px;padding:3px 4px">${unitOpts}</select>
+          <select class="grn-input" id="grnn-cat-${idx}" style="flex:1.5;font-size:10px;padding:3px 4px" onchange="grnCheckChem(${idx},this.value)">${catOpts}</select>
+          <select class="grn-input" id="grnn-unit-${idx}" style="width:60px;font-size:10px;padding:3px 4px">${unitOpts}</select>
         </div>
         <div style="display:flex;gap:4px">
-          <input class="grn-input" id="grnn-loc-${idx}" placeholder="Storage location" style="flex:1;font-size:10px">
-          <input class="grn-input" id="grnn-min-${idx}" type="number" step="0.1" placeholder="Min level" style="width:70px;font-size:10px">
+          <select class="grn-input" id="grnn-loc-${idx}" style="flex:1;font-size:10px;padding:3px 4px">${locOpts}</select>
+          <input class="grn-input" id="grnn-min-${idx}" type="number" step="0.1" placeholder="Min level" style="width:75px;font-size:10px">
         </div>
         <div id="grnn-chem-${idx}" style="display:none;flex-direction:column;gap:4px">
           <input class="grn-input" id="grnn-ppe-${idx}" placeholder="PPE required (e.g. Gloves, mask)" style="font-size:10px">
