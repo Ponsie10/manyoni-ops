@@ -436,14 +436,14 @@ function stockTypeOpts(selected='') {
 const state = {
   page: 'dashboard',
   tasks: [], taskLogs: [], assets: [], ecoObs: [], chemicals: [],
-  chemUsage: [], costEntries: [], stockItems: [], stockMovements: [], suppliers: [], assetLogs: [], costCentres: [], storeLocations: [],
+  chemUsage: [], costEntries: [], stockItems: [], stockMovements: [], suppliers: [], assetLogs: [], costCentres: [], storeLocations: [], repairs: [], showNewRepair: false,
   loading: false, dbReady: false,
   showNewTask: false, showNewAsset: false, showNewObs: false,
   showNewChem: false, showLogWork: false, showChemUse: false,
   showCostEntry: false, showStockItem: false, showStockIn: false,
   showStockOut: false, showOpCost: false, showSupplier: false, showStocktake: false, showRecon: false,
   showAssetLog: false, showNewAsset: false,
-  selectedTask: null, selectedChem: null, selectedStock: null, editingStockId: null, selectedAsset: null, editingAssetId: null,
+  selectedTask: null, selectedChem: null, selectedStock: null, editingStockId: null, selectedAsset: null, editingAssetId: null, editingTaskId: null,
   taskFilter: 'all', assetFilter: 'all', assetCatFilter: 'all', costCatFilter: '', stockCatFilter: 'all',
   stockSearch: '',
   reconciliations: [], reconItems: [], viewingReconId: null,
@@ -483,6 +483,23 @@ function fmtDateTime(d) { return d ? dayjs(d).format('D MMM, HH:mm') : '—'; }
 // DATABASE SETUP
 // ═══════════════════════════════════════
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS repairs (
+  id BIGSERIAL PRIMARY KEY,
+  asset_id BIGINT REFERENCES assets(id),
+  asset_name TEXT,
+  description TEXT NOT NULL,
+  sent_to TEXT,
+  sent_date DATE DEFAULT CURRENT_DATE,
+  expected_return DATE,
+  actual_return DATE,
+  cost NUMERIC DEFAULT 0,
+  status TEXT DEFAULT 'off_site',
+  follow_up_sent BOOLEAN DEFAULT false,
+  notes TEXT,
+  recorded_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS store_locations (
   id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
@@ -779,6 +796,9 @@ async function loadCostCentres() {
 async function loadStoreLocations() {
   try { state.storeLocations = await sb.get('store_locations?order=name.asc') || []; } catch(e) { state.storeLocations = []; }
 }
+async function loadRepairs() {
+  try { state.repairs = await sb.get('repairs?order=created_at.desc') || []; } catch(e) { state.repairs = []; }
+}
 async function loadReconciliations() {
   try { state.reconciliations = await sb.get('stock_reconciliations?order=period_year.desc,period_month.desc') || []; } catch(e) { state.reconciliations = []; }
 }
@@ -792,7 +812,7 @@ async function loadAll() {
   await Promise.allSettled([
     loadTasks(), loadAssets(), loadAssetLogs(), loadObs(), loadChemicals(), loadTaskLogs(),
     loadChemUsage(), loadCostEntries(), loadStockItems(), loadStockMovements(),
-    loadSuppliers(), loadReconciliations(), loadCostCentres(), loadStoreLocations()
+    loadSuppliers(), loadReconciliations(), loadCostCentres(), loadStoreLocations(), loadRepairs()
   ]);
   state.loading = false; render();
 }
@@ -812,6 +832,14 @@ async function updateTaskStatus(id, status) {
     toast(`Status updated to: ${status.replace(/_/g,' ')}`);
     await loadTasks();
   } catch(e) { toast('Update failed', 'error'); }
+}
+
+async function updateTask(id, data) {
+  try {
+    await sb.patch('tasks?id=eq.'+id, data);
+    toast('Task updated');
+    await loadTasks();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
 }
 
 async function createAsset(data) {
@@ -1019,6 +1047,8 @@ function buildApp() {
   ${state.showSupplier ? buildSupplierModal() : ''}
   ${state.showCostCentres ? buildCostCentresModal() : ''}
   ${state.showStoreSetup ? buildStoreSetupModal() : ''}
+  ${state.showNewRepair ? buildNewRepairModal() : ''}
+  ${state.showEditTask ? buildEditTaskModal() : ''}
   ${state.showAssetLog ? buildAssetLogModal() : ''}
   ${state.showStocktake ? buildStocktakeModal() : ''}
   ${state.selectedTask ? buildTaskDetail() : ''}
@@ -1108,7 +1138,7 @@ function buildTopbar() {
 }
 
 function buildPage() {
-  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: state.selectedAsset ? buildAssetDetail : buildAssets, environment: buildEcology, stock: buildStock, reconciliation: buildReconciliation, costs: buildCosts, reports: buildReports };
+  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: state.selectedAsset ? buildAssetDetail : buildAssets, repairs: buildRepairs, environment: buildEcology, stock: buildStock, reconciliation: buildReconciliation, costs: buildCosts, reports: buildReports };
   if (state.page === 'chemicals') { state.page = 'stock'; state.stockCatFilter = 'chemicals'; }
   return (pages[state.page] || buildDashboard)();
 }
@@ -1452,6 +1482,9 @@ function buildAssets() {
     high_value: { label:'High Value Assets', color:'var(--accent-hi)', icon:'◈' },
     fire_fighting: { label:'Fire Fighting Assets', color:'var(--red)', icon:'◉' },
     conservation: { label:'Conservation Assets', color:'var(--green)', icon:'◎' },
+    kitchen: { label:'Kitchen Assets', color:'var(--orange)', icon:'◎' },
+    lodge: { label:'Lodge Assets', color:'var(--sky)', icon:'◧' },
+    security: { label:'Security & Cameras', color:'var(--blue)', icon:'◉' },
     general_tools: { label:'General Assets & Tools', color:'var(--text-sec)', icon:'◧' }
   };
   const filter = state.assetCatFilter || 'all';
@@ -1480,7 +1513,10 @@ function buildAssets() {
         <div class="section-sub">— Fleet & Equipment</div>
         <div class="section-h">Asset Register</div>
       </div>
-      <button class="btn btn-primary" onclick="showModal('newAsset')">+ Register Asset</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" onclick="window.navigate('repairs')">&#9698; Off-site Repairs</button>
+        <button class="btn btn-primary" onclick="showModal('newAsset')">+ Register Asset</button>
+      </div>
     </div>
 
     <div class="grid-4">
@@ -2027,6 +2063,98 @@ function buildStock() {
 // COSTS
 // ═══════════════════════════════════════
 // ═══════════════════════════════════════
+// REPAIRS — OFF-SITE TRACKING
+// ═══════════════════════════════════════
+function buildRepairs() {
+  const active   = state.repairs.filter(r => r.status !== 'returned');
+  const returned = state.repairs.filter(r => r.status === 'returned');
+  const overdue  = active.filter(r => r.expected_return && r.expected_return < new Date().toISOString().slice(0,10));
+
+  return `
+  <div class="col-gap">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px">
+      <div class="section-title" style="margin-bottom:0">
+        <div class="section-sub">— Off-site</div>
+        <div class="section-h">Repairs Tracking</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" onclick="navigate('assets')">&#8592; Assets</button>
+        <button class="btn btn-primary" onclick="showModal('newRepair')">+ Log Repair</button>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      ${statCard('Off-site', active.length, 'items', active.length>0?'var(--orange)':'var(--green)')}
+      ${statCard('Overdue', overdue.length, 'returns', overdue.length>0?'var(--red)':'var(--green)')}
+      ${statCard('Returned', returned.length, 'total', 'var(--sky)')}
+    </div>
+
+    ${overdue.length ? `
+    <div class="card" style="border-color:color-mix(in srgb,var(--red) 40%,var(--border));background:color-mix(in srgb,var(--red) 5%,var(--dark-mid))">
+      <div class="card-title" style="color:var(--red)">&#8855; Overdue Returns</div>
+      ${overdue.map(r => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:color-mix(in srgb,var(--red) 8%,transparent);border-radius:var(--r);margin-bottom:5px">
+          <div>
+            <span style="font-weight:700;font-size:13px;color:var(--text)">${escHtml(r.asset_name||'Unknown asset')}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-left:10px">at ${escHtml(r.sent_to||'—')}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--red)">Due: ${fmtDate(r.expected_return)}</span>
+            <button class="btn btn-ghost" style="font-size:9px;padding:3px 8px" onclick="markRepairReturned(${r.id})">Mark Returned</button>
+          </div>
+        </div>`).join('')}
+    </div>` : ''}
+
+    <!-- Active repairs -->
+    ${active.length ? `
+    <div class="card">
+      <div class="card-title">&#9698; Currently Off-site</div>
+      <div class="col-gap" style="gap:6px">
+        ${active.map(r => {
+          const isOverdue = r.expected_return && r.expected_return < new Date().toISOString().slice(0,10);
+          return `
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:10px 12px;background:var(--surface);border-radius:var(--r);border:1px solid ${isOverdue?'color-mix(in srgb,var(--red) 40%,var(--border))':'var(--border)'}">
+            <div>
+              <div style="font-weight:700;font-size:13px;color:var(--text);margin-bottom:4px">${escHtml(r.asset_name||'Asset')}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);display:flex;gap:12px;flex-wrap:wrap">
+                <span>Sent to: ${escHtml(r.sent_to||'—')}</span>
+                <span>Sent: ${fmtDate(r.sent_date)}</span>
+                ${r.expected_return?`<span style="color:${isOverdue?'var(--red)':'var(--text-sec)'}">Expected back: ${fmtDate(r.expected_return)}</span>`:''}
+                ${Number(r.cost||0)>0?`<span style="color:var(--savanna)">Est cost: R${Number(r.cost).toLocaleString('en-ZA',{maximumFractionDigits:0})}</span>`:''}
+              </div>
+              ${r.description?`<div style="font-size:12px;color:var(--text-sec);margin-top:4px">${escHtml(r.description)}</div>`:''}
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;flex-shrink:0;margin-left:12px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:${isOverdue?'var(--red)':'var(--orange)'};background:color-mix(in srgb,${isOverdue?'var(--red)':'var(--orange)'} 15%,transparent);padding:2px 8px;border-radius:3px">${isOverdue?'OVERDUE':'OFF-SITE'}</span>
+              <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="markRepairReturned(${r.id})">&#10003; Returned</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : `<div class="empty card">No assets currently off-site for repairs</div>`}
+
+    <!-- Repair history -->
+    ${returned.length ? `
+    <div class="card">
+      <div class="card-title">&#10003; Repair History</div>
+      <div class="col-gap" style="gap:5px">
+        ${returned.slice(0,10).map(r => `
+          <div class="log-row">
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--green);background:color-mix(in srgb,var(--green) 12%,transparent);padding:2px 8px;border-radius:3px">RETURNED</span>
+              <div>
+                <div style="font-size:13px;font-weight:700;color:var(--text)">${escHtml(r.asset_name||'Asset')}</div>
+                <div class="log-meta">${escHtml(r.sent_to||'—')} &middot; ${fmtDate(r.sent_date)} &rarr; ${fmtDate(r.actual_return)} ${Number(r.cost||0)>0?' &middot; R'+Number(r.cost).toLocaleString('en-ZA',{maximumFractionDigits:0}):''}</div>
+              </div>
+            </div>
+            <div class="log-meta">${fmtDate(r.actual_return)}</div>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
+// ═══════════════════════════════════════
 // RECONCILIATION
 // ═══════════════════════════════════════
 function buildReconciliation() {
@@ -2538,6 +2666,9 @@ function buildAssetModal() {
             <option value="high_value" ${v('category')==='high_value'?'selected':''}>High Value Assets</option>
             <option value="fire_fighting" ${v('category')==='fire_fighting'?'selected':''}>Fire Fighting Assets</option>
             <option value="conservation" ${v('category')==='conservation'?'selected':''}>Conservation Assets</option>
+            <option value="kitchen" ${v('category')==='kitchen'?'selected':''}>Kitchen Assets</option>
+            <option value="lodge" ${v('category')==='lodge'?'selected':''}>Lodge Assets</option>
+            <option value="security" ${v('category')==='security'?'selected':''}>Security & Cameras</option>
             <option value="general_tools" ${v('category')==='general_tools'?'selected':''}>General Assets & Tools</option>
           </select>
         </div>
@@ -2634,6 +2765,9 @@ function buildAssetLogModal() {
     high_value: ['service','fuel','repair','check','mileage','issue','maintenance'],
     fire_fighting: ['check','service','repair','issue','maintenance'],
     conservation: ['check','service','repair','issue','maintenance'],
+    kitchen: ['check','service','repair','issue','cleaning','maintenance'],
+    lodge: ['check','service','repair','issue','maintenance'],
+    security: ['check','service','repair','issue','maintenance'],
     general_tools: ['check','repair','issue','maintenance']
   };
   const logTypes = LOG_TYPES[a.category] || LOG_TYPES.general_tools;
@@ -2792,6 +2926,88 @@ function buildLogWorkModal() {
   </div>`;
 }
 
+function buildEditTaskModal() {
+  const t = state.tasks.find(x => x.id === state.editingTaskId);
+  if (!t) return '';
+  const v = (f, fb='') => t[f] !== null && t[f] !== undefined ? t[f] : fb;
+  const ccOpts = state.costCentres.map(cc =>
+    `<option value="${cc.id}" ${t.cost_centre_id==cc.id?'selected':''}>${escHtml(cc.name)}</option>`
+  ).join('');
+
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal('editTask')">
+    <div class="modal" style="width:580px;max-height:90vh;overflow-y:auto">
+      <div class="modal-title">&#9998; Edit Task</div>
+
+      <div class="form-group"><label class="form-label">Title *</label>
+        <input class="form-input" id="et-title" value="${escHtml(v('title'))}">
+      </div>
+      <div class="form-group"><label class="form-label">Description</label>
+        <textarea class="form-textarea" id="et-desc">${escHtml(v('description'))}</textarea>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Type</label>
+          <select class="form-select" id="et-type">
+            ${['maintenance','cleaning','repair','inspection','environmental','farm','guest_issue','safety','incident','other'].map(tp =>
+              `<option value="${tp}" ${v('type')===tp?'selected':''}>${tp.replace(/_/g,' ').replace(/\w/g,x=>x.toUpperCase())}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Priority</label>
+          <select class="form-select" id="et-priority">
+            ${['low','medium','high','critical'].map(p =>
+              `<option value="${p}" ${v('priority','medium')===p?'selected':''}>${p.charAt(0).toUpperCase()+p.slice(1)}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Status</label>
+          <select class="form-select" id="et-status">
+            ${['created','assigned','in_progress','blocked','completed','verified','closed'].map(s =>
+              `<option value="${s}" ${v('status')===s?'selected':''}>${s.replace(/_/g,' ').replace(/\w/g,x=>x.toUpperCase())}</option>`
+            ).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Owner / Assigned To</label>
+          <input class="form-input" id="et-owner" placeholder="Person responsible" value="${escHtml(v('owner'))}">
+        </div>
+        <div class="form-group"><label class="form-label">Cost Centre</label>
+          <select class="form-select" id="et-cc">
+            <option value="">— Select cost centre —</option>
+            ${ccOpts}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Start Date</label>
+          <input class="form-input" id="et-start" type="date" value="${v('start_date')}">
+        </div>
+        <div class="form-group"><label class="form-label">Due Date</label>
+          <input class="form-input" id="et-due" type="date" value="${v('due_date')}">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Estimated Cost (R)</label>
+          <input class="form-input" id="et-est" type="number" step="0.01" value="${v('estimated_cost','')||''}">
+        </div>
+        <div class="form-group"><label class="form-label">Actual Cost (R)</label>
+          <input class="form-input" id="et-actual" type="number" step="0.01" value="${v('actual_cost','')||''}">
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
+        <button class="btn btn-ghost" onclick="closeModal('editTask')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitEditTask()">Save Changes</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function buildStoreSetupModal() {
   return `
   <div class="modal-overlay" onclick="if(event.target===this)closeModal('storeSetup')">
@@ -2877,6 +3093,52 @@ function buildCostCentresModal() {
 
       <div style="display:flex;justify-content:flex-end;margin-top:12px">
         <button class="btn btn-ghost" onclick="closeModal('costCentres')">Close</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildNewRepairModal() {
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal('newRepair')">
+    <div class="modal" style="width:520px">
+      <div class="modal-title">&#9698; Log Off-site Repair</div>
+      <div class="form-group"><label class="form-label">Asset *</label>
+        <select class="form-select" id="rep-asset">
+          <option value="">— Select asset —</option>
+          ${state.assets.map(a => `<option value="${a.id}" data-name="${escHtml(a.asset_name)}">${escHtml(a.asset_name)}${a.make_model?' ('+escHtml(a.make_model)+')':''}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Fault / Work Required *</label>
+        <textarea class="form-textarea" id="rep-desc" placeholder="Describe the fault and work to be done..." style="height:80px"></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Sent To (Workshop / Supplier) *</label>
+          <input class="form-input" id="rep-to" placeholder="e.g. ABC Auto, John's Workshop">
+        </div>
+        <div class="form-group"><label class="form-label">Date Sent</label>
+          <input class="form-input" id="rep-sent" type="date" value="${new Date().toISOString().slice(0,10)}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Expected Return Date</label>
+          <input class="form-input" id="rep-due" type="date">
+        </div>
+        <div class="form-group"><label class="form-label">Estimated Cost (R)</label>
+          <input class="form-input" id="rep-cost" type="number" step="0.01" placeholder="0.00">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Recorded By</label>
+          <input class="form-input" id="rep-by" placeholder="Your name">
+        </div>
+        <div class="form-group"><label class="form-label">Notes</label>
+          <input class="form-input" id="rep-notes" placeholder="Quote ref, contact person, etc.">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
+        <button class="btn btn-ghost" onclick="closeModal('newRepair')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitRepair()">Log Repair</button>
       </div>
     </div>
   </div>`;
@@ -3494,6 +3756,8 @@ window.showModal = (name) => {
   if(name==='recon') state.showRecon = true;
   if(name==='costCentres') state.showCostCentres = true;
   if(name==='storeSetup') state.showStoreSetup = true;
+  if(name==='newRepair') state.showNewRepair = true;
+  if(name==='editTask') state.showEditTask = true;
   if(name==='assetLog') state.showAssetLog = true;
   if(name==='newAsset') { state.showNewAsset = true; }
   render();
@@ -3516,6 +3780,8 @@ window.closeModal = (name) => {
   if(name==='recon') state.showRecon = false;
   if(name==='costCentres') state.showCostCentres = false;
   if(name==='storeSetup') state.showStoreSetup = false;
+  if(name==='newRepair') state.showNewRepair = false;
+  if(name==='editTask') { state.showEditTask = false; state.editingTaskId = null; }
   if(name==='assetLog') { state.showAssetLog = false; }
   if(name==='newAsset') { state.showNewAsset = false; state.editingAssetId = null; }
   render();
@@ -3849,6 +4115,70 @@ window.deleteStoreLocation = async (id) => {
     await sb.req('DELETE', 'store_locations?id=eq.'+id);
     await loadStoreLocations();
     toast('Store location removed');
+    render();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
+};
+
+window.openEditTask = (id) => { state.editingTaskId = id; state.showEditTask = true; render(); };
+
+window.submitEditTask = async () => {
+  const title = document.getElementById('et-title')?.value?.trim();
+  if (!title) { toast('Title required','error'); return; }
+  const ccVal = document.getElementById('et-cc')?.value;
+  await updateTask(state.editingTaskId, {
+    title,
+    description: document.getElementById('et-desc')?.value || null,
+    type: document.getElementById('et-type')?.value,
+    priority: document.getElementById('et-priority')?.value,
+    status: document.getElementById('et-status')?.value,
+    owner: document.getElementById('et-owner')?.value || null,
+    cost_centre_id: ccVal ? Number(ccVal) : null,
+    start_date: document.getElementById('et-start')?.value || null,
+    due_date: document.getElementById('et-due')?.value || null,
+    estimated_cost: document.getElementById('et-est')?.value || 0,
+    actual_cost: document.getElementById('et-actual')?.value || 0,
+  });
+  state.showEditTask = false; state.editingTaskId = null; render();
+};
+
+window.submitRepair = async () => {
+  const assetSel = document.getElementById('rep-asset');
+  const assetId  = assetSel?.value;
+  const assetName = assetSel?.options[assetSel.selectedIndex]?.dataset?.name || '';
+  const desc = document.getElementById('rep-desc')?.value?.trim();
+  const sentTo = document.getElementById('rep-to')?.value?.trim();
+  if (!assetId || !desc || !sentTo) { toast('Asset, description and workshop required','error'); return; }
+  try {
+    await sb.post('repairs', {
+      asset_id: Number(assetId),
+      asset_name: assetName,
+      description: desc,
+      sent_to: sentTo,
+      sent_date: document.getElementById('rep-sent')?.value || new Date().toISOString().slice(0,10),
+      expected_return: document.getElementById('rep-due')?.value || null,
+      cost: document.getElementById('rep-cost')?.value || 0,
+      recorded_by: document.getElementById('rep-by')?.value || null,
+      notes: document.getElementById('rep-notes')?.value || null,
+      status: 'off_site',
+    });
+    // Update asset status
+    await sb.patch('assets?id=eq.'+assetId, { status: 'maintenance' });
+    toast('Repair logged — asset marked as off-site');
+    await Promise.allSettled([loadRepairs(), loadAssets()]);
+    state.showNewRepair = false; render();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
+};
+
+window.markRepairReturned = async (id) => {
+  const today = new Date().toISOString().slice(0,10);
+  const rep = state.repairs.find(r => r.id === id);
+  if (!rep) return;
+  try {
+    await sb.patch('repairs?id=eq.'+id, { status: 'returned', actual_return: today });
+    // Restore asset status
+    if (rep.asset_id) await sb.patch('assets?id=eq.'+rep.asset_id, { status: 'operational' });
+    toast('Asset marked as returned and operational');
+    await Promise.allSettled([loadRepairs(), loadAssets()]);
     render();
   } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
 };
@@ -4206,6 +4536,9 @@ window.assetCatChange = (cat) => {
     high_value: ['4x4 / Game Viewer','Bakkie / LDV','Generator','Tractor','TLB / Loader','Golf Cart','Trailer','Implement','Other'],
     fire_fighting: ['Bakkie Sakkie','Fire Beater','Drip Torch','Knapsack Pump','Fire Rake','Other'],
     conservation: ['Brush Cutter','Weed Eater','Knapsack Sprayer','Chain Saw','Pruning Saw','Other'],
+    kitchen: ['Oven / Stove','Refrigerator','Chest Freezer','Dishwasher','Microwave','Coffee Machine','Ice Machine','Blender / Food Processor','Extractor Fan','Gas Burner','Other'],
+    lodge: ['Television','Air Conditioner','Geyser / Water Heater','Washing Machine','Dryer','Safe','Mini Bar Fridge','Ceiling Fan','Projector','Sound System','Pool Pump','Borehole Pump','Water Tank','Other'],
+    security: ['CCTV Camera','DVR / NVR','Electric Fence Unit','Gate Motor','Access Control','Alarm System','Two-Way Radio','Spotlight','Other'],
     general_tools: ['Power Drill','Angle Grinder','Circular Saw','Jigsaw','Wrench Set','Hand Tools','Ladder','Other']
   };
   const sel = document.getElementById('a-type');
