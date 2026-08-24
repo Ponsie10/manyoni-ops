@@ -437,6 +437,7 @@ const state = {
   page: 'dashboard',
   tasks: [], taskLogs: [], assets: [], ecoObs: [], chemicals: [],
   chemUsage: [], costEntries: [], stockItems: [], stockMovements: [], suppliers: [], assetLogs: [], costCentres: [], storeLocations: [], repairs: [], showNewRepair: false,
+  staff: [], fuelLogs: [], showNewStaff: false, showFuelLog: false, editingStaffId: null, selectedFuelAsset: null, staffFilter: 'all', fuelAssetFilter: 'all',
   loading: false, dbReady: false,
   showNewTask: false, showNewAsset: false, showNewObs: false,
   showNewChem: false, showLogWork: false, showChemUse: false,
@@ -483,6 +484,65 @@ function fmtDateTime(d) { return d ? dayjs(d).format('D MMM, HH:mm') : '—'; }
 // DATABASE SETUP
 // ═══════════════════════════════════════
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS staff (
+  id BIGSERIAL PRIMARY KEY,
+  employee_number TEXT UNIQUE,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL,
+  department TEXT,
+  phone TEXT,
+  email TEXT,
+  id_number TEXT,
+  drivers_license TEXT,
+  license_expiry DATE,
+  employment_type TEXT DEFAULT 'permanent',
+  start_date DATE,
+  work_cycle TEXT,
+  salary_band TEXT,
+  bank_name TEXT,
+  bank_account TEXT,
+  bank_branch TEXT,
+  emergency_contact_name TEXT,
+  emergency_contact_phone TEXT,
+  storage_location TEXT,
+  issued_items TEXT,
+  certifications TEXT,
+  is_active BOOLEAN DEFAULT true,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS leave_requests (
+  id BIGSERIAL PRIMARY KEY,
+  staff_id BIGINT REFERENCES staff(id),
+  leave_type TEXT NOT NULL,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  days_requested NUMERIC,
+  reason TEXT,
+  status TEXT DEFAULT 'pending',
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS fuel_logs (
+  id BIGSERIAL PRIMARY KEY,
+  asset_id BIGINT REFERENCES assets(id),
+  asset_name TEXT,
+  meter_unit TEXT DEFAULT 'km',
+  meter_start NUMERIC NOT NULL,
+  meter_end NUMERIC NOT NULL,
+  litres NUMERIC NOT NULL,
+  fuel_source TEXT DEFAULT 'Main lodge tank',
+  anomaly_flag TEXT DEFAULT 'ok',
+  logged_by TEXT,
+  notes TEXT,
+  log_date DATE DEFAULT CURRENT_DATE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS repairs (
   id BIGSERIAL PRIMARY KEY,
   asset_id BIGINT REFERENCES assets(id),
@@ -799,6 +859,12 @@ async function loadStoreLocations() {
 async function loadRepairs() {
   try { state.repairs = await sb.get('repairs?order=created_at.desc') || []; } catch(e) { state.repairs = []; }
 }
+async function loadStaff() {
+  try { state.staff = await sb.get('staff?order=name.asc') || []; } catch(e) { state.staff = []; }
+}
+async function loadFuelLogs() {
+  try { state.fuelLogs = await sb.get('fuel_logs?order=log_date.desc,created_at.desc') || []; } catch(e) { state.fuelLogs = []; }
+}
 async function loadReconciliations() {
   try { state.reconciliations = await sb.get('stock_reconciliations?order=period_year.desc,period_month.desc') || []; } catch(e) { state.reconciliations = []; }
 }
@@ -812,7 +878,7 @@ async function loadAll() {
   await Promise.allSettled([
     loadTasks(), loadAssets(), loadAssetLogs(), loadObs(), loadChemicals(), loadTaskLogs(),
     loadChemUsage(), loadCostEntries(), loadStockItems(), loadStockMovements(),
-    loadSuppliers(), loadReconciliations(), loadCostCentres(), loadStoreLocations(), loadRepairs()
+    loadSuppliers(), loadReconciliations(), loadCostCentres(), loadStoreLocations(), loadRepairs(), loadStaff(), loadFuelLogs()
   ]);
   state.loading = false; render();
 }
@@ -1048,6 +1114,8 @@ function buildApp() {
   ${state.showCostCentres ? buildCostCentresModal() : ''}
   ${state.showStoreSetup ? buildStoreSetupModal() : ''}
   ${state.showNewRepair ? buildNewRepairModal() : ''}
+  ${state.showNewStaff ? buildStaffModal() : ''}
+  ${state.showFuelLog ? buildFuelLogModal() : ''}
   ${state.showEditTask ? buildEditTaskModal() : ''}
   ${state.showAssetLog ? buildAssetLogModal() : ''}
   ${state.showStocktake ? buildStocktakeModal() : ''}
@@ -1088,6 +1156,8 @@ function buildSidebar() {
     { id:'tasks', icon:'◫', label:'Tasks' },
     { id:'assets', icon:'◧', label:'Assets' },
     { id:'environment', icon:'◉', label:'Ecology' },
+    { id:'fuel', icon:'◈', label:'Fuel' },
+    { id:'staff', icon:'◧', label:'Staff' },
     { id:'stock', icon:'◱', label:'Stock' },
     { id:'reconciliation', icon:'◫', label:'Stock Take' },
     { id:'costs', icon:'◈', label:'Costs' },
@@ -1138,7 +1208,7 @@ function buildTopbar() {
 }
 
 function buildPage() {
-  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: state.selectedAsset ? buildAssetDetail : buildAssets, repairs: buildRepairs, environment: buildEcology, stock: buildStock, reconciliation: buildReconciliation, costs: buildCosts, reports: buildReports };
+  const pages = { dashboard: buildDashboard, tasks: buildTasks, assets: state.selectedAsset ? buildAssetDetail : buildAssets, repairs: buildRepairs, environment: buildEcology, fuel: buildFuel, staff: buildStaff, stock: buildStock, reconciliation: buildReconciliation, costs: buildCosts, reports: buildReports };
   if (state.page === 'chemicals') { state.page = 'stock'; state.stockCatFilter = 'chemicals'; }
   return (pages[state.page] || buildDashboard)();
 }
@@ -2062,6 +2132,228 @@ function buildStock() {
 // ═══════════════════════════════════════
 // COSTS
 // ═══════════════════════════════════════
+// ═══════════════════════════════════════
+// FUEL
+// ═══════════════════════════════════════
+function buildFuel() {
+  const fuelAssets = state.assets.filter(a =>
+    ['4x4 / Game Viewer','Bakkie / LDV','Generator','Tractor','TLB / Loader','Golf Cart','Water Pump','Quad bike / ATV'].some(t => a.asset_type === t) ||
+    a.category === 'high_value'
+  );
+  const filter = state.fuelAssetFilter || 'all';
+  const logs = filter === 'all' ? state.fuelLogs : state.fuelLogs.filter(l => l.asset_id === Number(filter));
+  const thisMonth = new Date().toISOString().slice(0,7);
+  const monthLogs = state.fuelLogs.filter(l => (l.log_date||'').slice(0,7) === thisMonth);
+  const totalLitres = monthLogs.reduce((s,l) => s+Number(l.litres||0), 0);
+  const anomalies = state.fuelLogs.filter(l => l.anomaly_flag !== 'ok').slice(0,5);
+
+  // Per-asset summary
+  const assetSummary = {};
+  state.fuelLogs.forEach(l => {
+    if (!assetSummary[l.asset_id]) assetSummary[l.asset_id] = { name: l.asset_name, litres:0, logs:0, lastReading: 0 };
+    assetSummary[l.asset_id].litres += Number(l.litres||0);
+    assetSummary[l.asset_id].logs++;
+    if (Number(l.meter_end||0) > assetSummary[l.asset_id].lastReading)
+      assetSummary[l.asset_id].lastReading = Number(l.meter_end||0);
+  });
+
+  return `
+  <div class="col-gap">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px">
+      <div class="section-title" style="margin-bottom:0">
+        <div class="section-sub">— Fleet & Machinery</div>
+        <div class="section-h">Fuel Tracking</div>
+      </div>
+      <button class="btn btn-primary" onclick="showModal('fuelLog')">+ Log Fuel</button>
+    </div>
+
+    <div class="grid-4">
+      ${statCard('This Month', totalLitres.toFixed(0)+' L', 'total fuel', 'var(--orange)')}
+      ${statCard('Log Entries', state.fuelLogs.length, 'total', 'var(--accent-hi)')}
+      ${statCard('Anomalies', anomalies.length, 'flagged', anomalies.length>0?'var(--red)':'var(--green)')}
+      ${statCard('Tracked Assets', fuelAssets.length, 'vehicles & machines', 'var(--sky)')}
+    </div>
+
+    ${anomalies.length ? `
+    <div class="card" style="border-color:color-mix(in srgb,var(--red) 40%,var(--border));background:color-mix(in srgb,var(--red) 5%,var(--dark-mid))">
+      <div class="card-title" style="color:var(--red)">&#9888; Consumption Anomalies</div>
+      ${anomalies.map(l => {
+        const delta = Number(l.meter_end||0) - Number(l.meter_start||0);
+        const rate = delta > 0 ? (Number(l.litres)/delta).toFixed(3) : '—';
+        return `
+        <div style="display:flex;justify-content:space-between;padding:7px 10px;background:color-mix(in srgb,var(--red) 8%,transparent);border-radius:var(--r);margin-bottom:4px">
+          <span style="font-size:12px;color:var(--text);font-weight:600">${escHtml(l.asset_name||'Unknown')}</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--red)">${l.litres}L / ${delta} ${l.meter_unit} = ${rate} L/${l.meter_unit} — ${(l.anomaly_flag||'').toUpperCase()}</span>
+        </div>`;
+      }).join('')}
+    </div>` : ''}
+
+    <!-- Asset filter tabs -->
+    <div class="filter-row" style="flex-wrap:wrap">
+      <button class="filter-btn ${filter==='all'?'active':''}" onclick="setFuelFilter('all')">ALL VEHICLES</button>
+      ${fuelAssets.map(a =>
+        `<button class="filter-btn ${filter==a.id?'active':''}" onclick="setFuelFilter(${a.id})">${escHtml(a.asset_name)}</button>`
+      ).join('')}
+    </div>
+
+    <!-- Asset fuel cards -->
+    ${fuelAssets.length ? `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px">
+      ${fuelAssets.map(a => {
+        const aLogs = state.fuelLogs.filter(l => l.asset_id === a.id);
+        const aLitres = aLogs.reduce((s,l)=>s+Number(l.litres||0),0);
+        const lastLog = aLogs[0];
+        const lastReading = lastLog ? Number(lastLog.meter_end||0) : Number(a.current_reading||0);
+        const unit = a.tracking_unit || 'km';
+        const rates = aLogs.filter(l=>{const d=Number(l.meter_end)-Number(l.meter_start);return d>0;}).map(l=>(Number(l.litres)/(Number(l.meter_end)-Number(l.meter_start))));
+        const avgRate = rates.length ? (rates.reduce((s,r)=>s+r,0)/rates.length).toFixed(3) : null;
+        return `
+        <div class="card">
+          <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">${escHtml(a.asset_name)}</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-bottom:10px">${escHtml(a.asset_type||a.category||'—')}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div style="background:var(--surface);padding:8px;border-radius:var(--r)">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:2px">CURRENT ${unit.toUpperCase()}</div>
+              <div style="font-size:15px;font-weight:700;color:var(--accent)">${lastReading.toLocaleString()} ${unit}</div>
+            </div>
+            <div style="background:var(--surface);padding:8px;border-radius:var(--r)">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-bottom:2px">TOTAL FUEL</div>
+              <div style="font-size:15px;font-weight:700;color:var(--orange)">${aLitres.toFixed(0)} L</div>
+            </div>
+          </div>
+          ${avgRate ? `<div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">Avg: ${avgRate} L/${unit}</div>` : ''}
+          <div style="margin-top:8px;display:flex;gap:6px">
+            <button class="btn btn-primary" style="font-size:10px;padding:4px 12px;flex:1" onclick="openFuelLog(${a.id})">+ Log Fuel</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>` : `<div class="empty card">No tracked assets yet — add vehicles and machinery in the Assets module</div>`}
+
+    <!-- Fuel log table -->
+    ${logs.length ? `
+    <div class="card">
+      <div class="card-title">&#9670; Fuel Log</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:var(--surface)">
+              ${['DATE','ASSET','START','END','DELTA','LITRES','L/UNIT','SOURCE','BY','FLAG'].map(h=>
+                `<th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:7px 10px;text-align:left;border-bottom:2px solid var(--border);white-space:nowrap">${h}</th>`
+              ).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${logs.slice(0,30).map(l => {
+              const delta = Number(l.meter_end||0) - Number(l.meter_start||0);
+              const rate  = delta > 0 ? (Number(l.litres)/delta).toFixed(3) : '—';
+              const flagCol = l.anomaly_flag==='high'?'var(--red)':l.anomaly_flag==='low'?'var(--orange)':'var(--green)';
+              return `
+              <tr style="border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">${l.log_date||''}</td>
+                <td style="padding:6px 10px;font-weight:600;color:var(--text)">${escHtml(l.asset_name||'—')}</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px">${l.meter_start} ${l.meter_unit}</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px">${l.meter_end} ${l.meter_unit}</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent)">${delta} ${l.meter_unit}</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--orange)">${l.litres} L</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px">${rate}</td>
+                <td style="padding:6px 10px;font-size:10px;color:var(--text-muted)">${escHtml(l.fuel_source||'—')}</td>
+                <td style="padding:6px 10px;font-size:10px;color:var(--text-muted)">${escHtml(l.logged_by||'—')}</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:9px;color:${flagCol}">${(l.anomaly_flag||'ok').toUpperCase()}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : `<div class="empty card">No fuel logs yet — click Log Fuel to start tracking</div>`}
+  </div>`;
+}
+
+// ═══════════════════════════════════════
+// STAFF
+// ═══════════════════════════════════════
+function buildStaff() {
+  const ROLES = ['General Manager','Farm Manager','Lodge Manager','Conservation Manager','Maintenance Supervisor','Head Guide','Senior Guide','Guide','Head Chef','Sous Chef','Chef','Head Housekeeper','Housekeeper','Butler','Head Barman','Barman','Spa Therapist','Administrator','Security','Farm Hand','General Worker'];
+  const DEPTS = ['Management','Conservation','Maintenance','Kitchen','Housekeeping','Bar','Guide','Spa','Farm','Security','Administration'];
+  const CYCLES = ['Mon-Fri','3 weeks on / 1 week off','6 weeks on / 2 weeks off','Shift rotation','Live-in permanent'];
+  const TYPES = ['permanent','casual','contractor','seasonal'];
+
+  const active   = state.staff.filter(s => s.is_active !== false);
+  const inactive = state.staff.filter(s => s.is_active === false);
+  const filter   = state.staffFilter || 'all';
+  const filtered = filter === 'all' ? active : active.filter(s => s.department === filter);
+
+  const deptCounts = {};
+  active.forEach(s => { deptCounts[s.department] = (deptCounts[s.department]||0)+1; });
+
+  return `
+  <div class="col-gap">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px">
+      <div class="section-title" style="margin-bottom:0">
+        <div class="section-sub">— Human Resources</div>
+        <div class="section-h">Staff Register</div>
+      </div>
+      <button class="btn btn-primary" onclick="showModal('newStaff')">+ Add Staff Member</button>
+    </div>
+
+    <div class="grid-4">
+      ${statCard('Total Staff', active.length, 'active', 'var(--accent-hi)')}
+      ${statCard('Departments', Object.keys(deptCounts).length, 'active', 'var(--sky)')}
+      ${statCard('Permanent', active.filter(s=>s.employment_type==='permanent').length, 'staff', 'var(--green)')}
+      ${statCard('Casual / Other', active.filter(s=>s.employment_type!=='permanent').length, 'staff', 'var(--savanna)')}
+    </div>
+
+    <!-- Dept filter -->
+    <div class="filter-row" style="flex-wrap:wrap">
+      <button class="filter-btn ${filter==='all'?'active':''}" onclick="setStaffFilter('all')">ALL (${active.length})</button>
+      ${DEPTS.filter(d => deptCounts[d]).map(d =>
+        `<button class="filter-btn ${filter===d?'active':''}" onclick="setStaffFilter('${d}')">${d.toUpperCase()} (${deptCounts[d]||0})</button>`
+      ).join('')}
+    </div>
+
+    <!-- Staff cards -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">
+      ${filtered.length ? filtered.map(s => {
+        const initials = s.name.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase();
+        const hasCerts = s.certifications;
+        return `
+        <div class="card" style="cursor:pointer" onclick="openEditStaff(${s.id})">
+          <div style="display:flex;align-items:flex-start;gap:12px">
+            <div style="width:42px;height:42px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:var(--dark);flex-shrink:0">${initials}</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:2px">${escHtml(s.name)}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent)">${escHtml(s.role||'—')}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">
+                ${s.department?`<span>${escHtml(s.department)}</span>`:''}
+                ${s.employment_type?`<span>${escHtml(s.employment_type)}</span>`:''}
+                ${s.work_cycle?`<span>${escHtml(s.work_cycle)}</span>`:''}
+              </div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">
+                ${s.phone?`<span>&#128222; ${escHtml(s.phone)}</span>`:''}
+                ${s.employee_number?`<span>#${escHtml(s.employee_number)}</span>`:''}
+              </div>
+              ${s.license_expiry && new Date(s.license_expiry) < new Date(Date.now()+90*24*3600*1000) ? `
+                <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--red);margin-top:4px">
+                  ⊗ License expires ${fmtDate(s.license_expiry)}
+                </div>` : ''}
+            </div>
+            <div>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--green);background:color-mix(in srgb,var(--green) 15%,transparent);padding:2px 7px;border-radius:3px">ACTIVE</span>
+            </div>
+          </div>
+        </div>`;
+      }).join('') : `<div class="empty card" style="grid-column:1/-1">No staff in this department yet</div>`}
+    </div>
+
+    ${inactive.length ? `
+    <div class="card">
+      <div class="card-title" style="color:var(--text-muted)">&#9744; Inactive Staff (${inactive.length})</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">
+        ${inactive.map(s => escHtml(s.name)).join(', ')}
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
 // ═══════════════════════════════════════
 // REPAIRS — OFF-SITE TRACKING
 // ═══════════════════════════════════════
@@ -3008,6 +3300,204 @@ function buildEditTaskModal() {
   </div>`;
 }
 
+function buildStaffModal() {
+  const editing = state.editingStaffId ? state.staff.find(s => s.id === state.editingStaffId) : null;
+  const v = (f, fb='') => editing ? (editing[f]!==null&&editing[f]!==undefined ? editing[f] : fb) : fb;
+  const ROLES = ['General Manager','Farm Manager','Lodge Manager','Conservation Manager','Maintenance Supervisor','Head Guide','Senior Guide','Guide','Head Chef','Sous Chef','Chef','Head Housekeeper','Housekeeper','Butler','Head Barman','Barman','Spa Therapist','Administrator','Security','Farm Hand','General Worker','Other'];
+  const DEPTS = ['Management','Conservation','Maintenance','Kitchen','Housekeeping','Bar','Guide','Spa','Farm','Security','Administration'];
+
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal('newStaff')">
+    <div class="modal" style="width:620px;max-height:92vh;overflow-y:auto">
+      <div class="modal-title">&#9671; ${editing?'Edit Staff Member':'Add Staff Member'}</div>
+
+      <!-- Basic info -->
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">BASIC INFORMATION</div>
+      <div class="form-row">
+        <div class="form-group" style="flex:2"><label class="form-label">Full Name *</label>
+          <input class="form-input" id="st-name" value="${escHtml(v('name'))}" placeholder="Full name">
+        </div>
+        <div class="form-group"><label class="form-label">Employee #</label>
+          <input class="form-input" id="st-empno" value="${escHtml(v('employee_number'))}" placeholder="EMP001">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Role *</label>
+          <select class="form-select" id="st-role">
+            ${ROLES.map(r=>`<option value="${r}" ${v('role')===r?'selected':''}>${r}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Department</label>
+          <select class="form-select" id="st-dept">
+            <option value="">— Select —</option>
+            ${DEPTS.map(d=>`<option value="${d}" ${v('department')===d?'selected':''}>${d}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Employment Type</label>
+          <select class="form-select" id="st-type">
+            ${['permanent','casual','contractor','seasonal'].map(t=>`<option value="${t}" ${v('employment_type','permanent')===t?'selected':''}>${t.charAt(0).toUpperCase()+t.slice(1)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Work Cycle</label>
+          <select class="form-select" id="st-cycle">
+            <option value="">— Select —</option>
+            ${['Mon-Fri','3 weeks on / 1 week off','6 weeks on / 2 weeks off','Shift rotation','Live-in permanent'].map(c=>`<option value="${c}" ${v('work_cycle')===c?'selected':''}>${c}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Start Date</label>
+          <input class="form-input" id="st-start" type="date" value="${v('start_date')}">
+        </div>
+        <div class="form-group"><label class="form-label">Status</label>
+          <select class="form-select" id="st-active">
+            <option value="true" ${v('is_active',true)?'selected':''}>Active</option>
+            <option value="false" ${v('is_active',true)===false?'selected':''}>Inactive</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Contact -->
+      <div style="border-top:1px solid var(--border);margin:14px 0 10px;padding-top:12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px">CONTACT & IDENTIFICATION</div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Phone (WhatsApp) *</label>
+          <input class="form-input" id="st-phone" value="${escHtml(v('phone'))}" placeholder="+27XXXXXXXXX">
+        </div>
+        <div class="form-group"><label class="form-label">Email</label>
+          <input class="form-input" id="st-email" value="${escHtml(v('email'))}" placeholder="email@...">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">ID Number</label>
+          <input class="form-input" id="st-id" value="${escHtml(v('id_number'))}" placeholder="SA ID number">
+        </div>
+        <div class="form-group"><label class="form-label">Driver's License</label>
+          <input class="form-input" id="st-license" value="${escHtml(v('drivers_license'))}" placeholder="Code B, C, EB...">
+        </div>
+        <div class="form-group"><label class="form-label">License Expiry</label>
+          <input class="form-input" id="st-licexp" type="date" value="${v('license_expiry')}">
+        </div>
+      </div>
+
+      <!-- Emergency contact -->
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Emergency Contact</label>
+          <input class="form-input" id="st-ec-name" value="${escHtml(v('emergency_contact_name'))}" placeholder="Name">
+        </div>
+        <div class="form-group"><label class="form-label">Emergency Phone</label>
+          <input class="form-input" id="st-ec-phone" value="${escHtml(v('emergency_contact_phone'))}" placeholder="+27...">
+        </div>
+      </div>
+
+      <!-- Banking (management only in prod — shown here for setup) -->
+      <div style="border-top:1px solid var(--border);margin:14px 0 10px;padding-top:12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px">BANKING (MANAGEMENT ONLY)</div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Bank</label>
+          <input class="form-input" id="st-bank" value="${escHtml(v('bank_name'))}" placeholder="FNB, ABSA, Standard...">
+        </div>
+        <div class="form-group"><label class="form-label">Account Number</label>
+          <input class="form-input" id="st-acc" value="${escHtml(v('bank_account'))}" placeholder="Account number">
+        </div>
+        <div class="form-group"><label class="form-label">Branch Code</label>
+          <input class="form-input" id="st-branch" value="${escHtml(v('bank_branch'))}" placeholder="Branch code">
+        </div>
+      </div>
+
+      <!-- Issued items + notes -->
+      <div style="border-top:1px solid var(--border);margin:14px 0 10px;padding-top:12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px">ISSUED ITEMS & CERTIFICATIONS</div>
+      <div class="form-group"><label class="form-label">Issued Items</label>
+        <input class="form-input" id="st-issued" value="${escHtml(v('issued_items'))}" placeholder="Uniform, radio, keys, boots — comma separated">
+      </div>
+      <div class="form-group"><label class="form-label">Certifications / Training</label>
+        <input class="form-input" id="st-certs" value="${escHtml(v('certifications'))}" placeholder="First Aid, Chainsaw, PDP — comma separated">
+      </div>
+      <div class="form-group"><label class="form-label">Notes</label>
+        <textarea class="form-textarea" id="st-notes" style="height:60px">${escHtml(v('notes'))}</textarea>
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
+        <button class="btn btn-ghost" onclick="closeModal('newStaff')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitStaff()">${editing?'Save Changes':'Add Staff Member'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildFuelLogModal() {
+  const selId = state.selectedFuelAsset;
+  const fuelAssets = state.assets.filter(a => a.category === 'high_value' || ['Generator','Tractor','TLB / Loader'].includes(a.asset_type));
+  const sel = selId ? fuelAssets.find(a => a.id === selId) : null;
+  const isHours = sel && (sel.tracking_unit === 'hrs' || ['Generator','Tractor','TLB / Loader','Water Pump'].includes(sel.asset_type));
+  const unitLabel = isHours ? 'Hour Reading' : 'Odometer (km)';
+  const lastReading = sel ? Number(sel.current_reading||0) : 0;
+
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal('fuelLog')">
+    <div class="modal" style="width:500px">
+      <div class="modal-title">&#9670; Log Fuel</div>
+
+      <div class="form-group"><label class="form-label">Vehicle / Machine *</label>
+        <select class="form-select" id="fl-asset" onchange="updateFuelUnit(this.value)">
+          <option value="">— Select asset —</option>
+          ${fuelAssets.map(a => {
+            const u = (a.tracking_unit==='hrs'||['Generator','Tractor','TLB / Loader'].includes(a.asset_type)) ? 'hrs' : 'km';
+            return `<option value="${a.id}" data-unit="${u}" data-reading="${a.current_reading||0}" ${a.id===selId?'selected':''}>${escHtml(a.asset_name)} — ${a.current_reading||0} ${u}</option>`;
+          }).join('')}
+        </select>
+      </div>
+
+      ${sel ? `<div style="background:var(--surface);border-radius:var(--r);padding:8px 12px;margin-bottom:12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">
+        Last recorded: <strong style="color:var(--accent)">${lastReading} ${isHours?'hrs':'km'}</strong>
+      </div>` : ''}
+
+      <div class="form-row">
+        <div class="form-group"><label class="form-label" id="fl-start-label">${unitLabel} START *</label>
+          <input class="form-input" id="fl-start" type="number" step="0.1" placeholder="${lastReading||0}" value="${lastReading||''}">
+        </div>
+        <div class="form-group"><label class="form-label" id="fl-end-label">${unitLabel} END *</label>
+          <input class="form-input" id="fl-end" type="number" step="0.1" placeholder="" oninput="calcFuelStats()">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Litres Added *</label>
+          <input class="form-input" id="fl-litres" type="number" step="0.1" placeholder="0.0" oninput="calcFuelStats()">
+        </div>
+        <div class="form-group"><label class="form-label">Fuel Source</label>
+          <select class="form-select" id="fl-source">
+            ${['Main lodge tank','Supplier delivery','Garage','Jerry can'].map(s=>`<option value="${s}">${s}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div style="background:var(--surface);border-radius:var(--r);padding:10px 14px;margin-bottom:12px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-sec)">
+        Delta: <span id="fl-delta" style="color:var(--accent)">—</span>
+        &nbsp;&nbsp;Consumption: <span id="fl-rate" style="color:var(--savanna)">—</span>
+        &nbsp;&nbsp;Status: <span id="fl-flag" style="color:var(--green)">—</span>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Logged By</label>
+          <input class="form-input" id="fl-by" placeholder="Your name">
+        </div>
+        <div class="form-group"><label class="form-label">Date</label>
+          <input class="form-input" id="fl-date" type="date" value="${new Date().toISOString().slice(0,10)}">
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Notes</label>
+        <input class="form-input" id="fl-notes" placeholder="Any issues, observations...">
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
+        <button class="btn btn-ghost" onclick="closeModal('fuelLog')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitFuelLog()">Save Fuel Log</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function buildStoreSetupModal() {
   return `
   <div class="modal-overlay" onclick="if(event.target===this)closeModal('storeSetup')">
@@ -3757,6 +4247,8 @@ window.showModal = (name) => {
   if(name==='costCentres') state.showCostCentres = true;
   if(name==='storeSetup') state.showStoreSetup = true;
   if(name==='newRepair') state.showNewRepair = true;
+  if(name==='newStaff') { state.showNewStaff = true; }
+  if(name==='fuelLog') state.showFuelLog = true;
   if(name==='editTask') state.showEditTask = true;
   if(name==='assetLog') state.showAssetLog = true;
   if(name==='newAsset') { state.showNewAsset = true; }
@@ -3781,6 +4273,8 @@ window.closeModal = (name) => {
   if(name==='costCentres') state.showCostCentres = false;
   if(name==='storeSetup') state.showStoreSetup = false;
   if(name==='newRepair') state.showNewRepair = false;
+  if(name==='newStaff') { state.showNewStaff = false; state.editingStaffId = null; }
+  if(name==='fuelLog') { state.showFuelLog = false; state.selectedFuelAsset = null; }
   if(name==='editTask') { state.showEditTask = false; state.editingTaskId = null; }
   if(name==='assetLog') { state.showAssetLog = false; }
   if(name==='newAsset') { state.showNewAsset = false; state.editingAssetId = null; }
@@ -4116,6 +4610,115 @@ window.deleteStoreLocation = async (id) => {
     await loadStoreLocations();
     toast('Store location removed');
     render();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
+};
+
+window.setStaffFilter = (f) => { state.staffFilter = f; render(); };
+window.setFuelFilter = (f) => { state.fuelAssetFilter = f; render(); };
+window.openFuelLog = (assetId) => { state.selectedFuelAsset = assetId; state.showFuelLog = true; render(); };
+window.openEditStaff = (id) => { state.editingStaffId = id; state.showNewStaff = true; render(); };
+
+window.updateFuelUnit = (assetId) => {
+  const a = state.assets.find(x => x.id === Number(assetId));
+  if (!a) return;
+  const isHrs = a.tracking_unit === 'hrs' || ['Generator','Tractor','TLB / Loader'].includes(a.asset_type);
+  const label = isHrs ? 'Hour Reading' : 'Odometer (km)';
+  const unit  = isHrs ? 'hrs' : 'km';
+  ['fl-start-label','fl-end-label'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = label + (id.includes('start')?' START *':' END *'); });
+  const startEl = document.getElementById('fl-start');
+  if (startEl) startEl.value = a.current_reading || '';
+};
+
+window.calcFuelStats = () => {
+  const start  = parseFloat(document.getElementById('fl-start')?.value||0);
+  const end    = parseFloat(document.getElementById('fl-end')?.value||0);
+  const litres = parseFloat(document.getElementById('fl-litres')?.value||0);
+  const delta  = end - start;
+  const rate   = delta > 0 ? litres/delta : 0;
+  const dEl = document.getElementById('fl-delta');
+  const rEl = document.getElementById('fl-rate');
+  const fEl = document.getElementById('fl-flag');
+  if (dEl) dEl.textContent = delta > 0 ? delta.toFixed(1) : '—';
+  if (rEl) rEl.textContent = rate > 0 ? rate.toFixed(3)+' L/unit' : '—';
+  if (fEl) {
+    const flag = rate > 0.18 || rate > 10 ? 'HIGH ⚠' : rate > 0 && rate < 0.04 ? 'LOW ⚠' : rate > 0 ? 'NORMAL ✓' : '—';
+    const col  = flag.includes('HIGH')||flag.includes('LOW') ? 'var(--red)' : 'var(--green)';
+    fEl.textContent = flag;
+    fEl.style.color = col;
+  }
+};
+
+window.submitFuelLog = async () => {
+  const assetId = Number(document.getElementById('fl-asset')?.value);
+  const start   = document.getElementById('fl-start')?.value;
+  const end     = document.getElementById('fl-end')?.value;
+  const litres  = document.getElementById('fl-litres')?.value;
+  if (!assetId || !start || !end || !litres) { toast('Asset, readings and litres are required','error'); return; }
+  if (Number(end) <= Number(start)) { toast('End reading must be greater than start','error'); return; }
+  const asset = state.assets.find(a => a.id === assetId);
+  const isHrs = asset && (asset.tracking_unit==='hrs' || ['Generator','Tractor','TLB / Loader'].includes(asset.asset_type));
+  const delta = Number(end) - Number(start);
+  const rate  = delta > 0 ? Number(litres)/delta : 0;
+  const flag  = rate > 0.18 || rate > 10 ? 'high' : rate > 0 && rate < 0.04 ? 'low' : 'ok';
+  try {
+    await sb.post('fuel_logs', {
+      asset_id: assetId,
+      asset_name: asset ? asset.asset_name : null,
+      meter_unit: isHrs ? 'hrs' : 'km',
+      meter_start: Number(start),
+      meter_end: Number(end),
+      litres: Number(litres),
+      fuel_source: document.getElementById('fl-source')?.value || 'Main lodge tank',
+      anomaly_flag: flag,
+      logged_by: document.getElementById('fl-by')?.value || null,
+      notes: document.getElementById('fl-notes')?.value || null,
+      log_date: document.getElementById('fl-date')?.value || new Date().toISOString().slice(0,10),
+    });
+    // Update asset current reading
+    if (asset) await sb.patch('assets?id=eq.'+assetId, { current_reading: Number(end) });
+    if (flag !== 'ok') toast('⚠ Fuel consumption anomaly detected — please check', 'error');
+    else toast('Fuel log saved');
+    await Promise.allSettled([loadFuelLogs(), loadAssets()]);
+    state.showFuelLog = false; state.selectedFuelAsset = null; render();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
+};
+
+window.submitStaff = async () => {
+  const name = document.getElementById('st-name')?.value?.trim();
+  const role = document.getElementById('st-role')?.value;
+  if (!name) { toast('Name required','error'); return; }
+  const data = {
+    name, role,
+    employee_number: document.getElementById('st-empno')?.value || null,
+    department: document.getElementById('st-dept')?.value || null,
+    employment_type: document.getElementById('st-type')?.value || 'permanent',
+    work_cycle: document.getElementById('st-cycle')?.value || null,
+    start_date: document.getElementById('st-start')?.value || null,
+    is_active: document.getElementById('st-active')?.value !== 'false',
+    phone: document.getElementById('st-phone')?.value || null,
+    email: document.getElementById('st-email')?.value || null,
+    id_number: document.getElementById('st-id')?.value || null,
+    drivers_license: document.getElementById('st-license')?.value || null,
+    license_expiry: document.getElementById('st-licexp')?.value || null,
+    emergency_contact_name: document.getElementById('st-ec-name')?.value || null,
+    emergency_contact_phone: document.getElementById('st-ec-phone')?.value || null,
+    bank_name: document.getElementById('st-bank')?.value || null,
+    bank_account: document.getElementById('st-acc')?.value || null,
+    bank_branch: document.getElementById('st-branch')?.value || null,
+    issued_items: document.getElementById('st-issued')?.value || null,
+    certifications: document.getElementById('st-certs')?.value || null,
+    notes: document.getElementById('st-notes')?.value || null,
+  };
+  try {
+    if (state.editingStaffId) {
+      await sb.patch('staff?id=eq.'+state.editingStaffId, data);
+      toast('Staff member updated');
+    } else {
+      await sb.post('staff', data);
+      toast('Staff member added');
+    }
+    await loadStaff();
+    state.showNewStaff = false; state.editingStaffId = null; render();
   } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
 };
 
