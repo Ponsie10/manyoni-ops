@@ -437,7 +437,7 @@ const state = {
   page: 'dashboard',
   tasks: [], taskLogs: [], assets: [], ecoObs: [], chemicals: [],
   chemUsage: [], costEntries: [], stockItems: [], stockMovements: [], suppliers: [], assetLogs: [], costCentres: [], storeLocations: [], repairs: [], showNewRepair: false,
-  staff: [], fuelLogs: [], showNewStaff: false, showFuelLog: false, editingStaffId: null, selectedFuelAsset: null, staffFilter: 'all', fuelAssetFilter: 'all',
+  staff: [], fuelLogs: [], leaveRequests: [], showNewStaff: false, showFuelLog: false, showLeaveRequest: false, showLeaveCalendar: false, editingStaffId: null, selectedFuelAsset: null, selectedLeaveStaff: null, staffFilter: 'all', fuelAssetFilter: 'all', staffView: 'register',
   loading: false, dbReady: false,
   showNewTask: false, showNewAsset: false, showNewObs: false,
   showNewChem: false, showLogWork: false, showChemUse: false,
@@ -488,26 +488,80 @@ CREATE TABLE IF NOT EXISTS staff (
   id BIGSERIAL PRIMARY KEY,
   employee_number TEXT UNIQUE,
   name TEXT NOT NULL,
+  surname TEXT,
+  preferred_name TEXT,
+  initials TEXT,
+  home_language TEXT,
+  date_of_birth DATE,
+  id_number TEXT,
+  passport_number TEXT,
+  passport_country TEXT,
+  work_permit_number TEXT,
+  nationality TEXT,
+  citizenship TEXT,
+  gender TEXT,
   role TEXT NOT NULL,
   department TEXT,
-  phone TEXT,
-  email TEXT,
-  id_number TEXT,
-  drivers_license TEXT,
-  license_expiry DATE,
+  manager TEXT,
   employment_type TEXT DEFAULT 'permanent',
   start_date DATE,
   work_cycle TEXT,
+  leave_cycle_start DATE,
+  annual_leave_days NUMERIC DEFAULT 15,
+  leave_days_accumulated NUMERIC DEFAULT 0,
   salary_band TEXT,
+  phone TEXT,
+  email TEXT,
+  residential_address TEXT,
+  postal_address TEXT,
+  emergency_contact_name TEXT,
+  emergency_contact_phone TEXT,
+  emergency_contact_relation TEXT,
+  emergency_contact_name2 TEXT,
+  emergency_contact_phone2 TEXT,
+  emergency_contact_relation2 TEXT,
   bank_name TEXT,
   bank_account TEXT,
   bank_branch TEXT,
-  emergency_contact_name TEXT,
-  emergency_contact_phone TEXT,
-  storage_location TEXT,
-  issued_items TEXT,
+  bank_account_type TEXT,
+  tax_number TEXT,
+  income_tax_number TEXT,
+  drivers_license TEXT,
+  license_code TEXT,
+  license_expiry DATE,
+  pdp TEXT,
+  pdp_expiry DATE,
+  medical_aid TEXT,
+  medical_aid_plan TEXT,
+  medical_aid_number TEXT,
+  allergies TEXT,
+  medical_conditions TEXT,
+  chronic_medication TEXT,
+  qualifications TEXT,
   certifications TEXT,
+  skills TEXT,
+  issued_items TEXT,
+  criminal_record BOOLEAN DEFAULT false,
   is_active BOOLEAN DEFAULT true,
+  onboarding_sent BOOLEAN DEFAULT false,
+  favourite_animal TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS leave_requests (
+  id BIGSERIAL PRIMARY KEY,
+  staff_id BIGINT REFERENCES staff(id),
+  staff_name TEXT,
+  leave_type TEXT NOT NULL,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  days_requested NUMERIC,
+  reason TEXT,
+  status TEXT DEFAULT 'pending',
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  source TEXT DEFAULT 'app',
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -862,6 +916,9 @@ async function loadRepairs() {
 async function loadStaff() {
   try { state.staff = await sb.get('staff?order=name.asc') || []; } catch(e) { state.staff = []; }
 }
+async function loadLeaveRequests() {
+  try { state.leaveRequests = await sb.get('leave_requests?order=start_date.asc') || []; } catch(e) { state.leaveRequests = []; }
+}
 async function loadFuelLogs() {
   try { state.fuelLogs = await sb.get('fuel_logs?order=log_date.desc,created_at.desc') || []; } catch(e) { state.fuelLogs = []; }
 }
@@ -878,7 +935,7 @@ async function loadAll() {
   await Promise.allSettled([
     loadTasks(), loadAssets(), loadAssetLogs(), loadObs(), loadChemicals(), loadTaskLogs(),
     loadChemUsage(), loadCostEntries(), loadStockItems(), loadStockMovements(),
-    loadSuppliers(), loadReconciliations(), loadCostCentres(), loadStoreLocations(), loadRepairs(), loadStaff(), loadFuelLogs()
+    loadSuppliers(), loadReconciliations(), loadCostCentres(), loadStoreLocations(), loadRepairs(), loadStaff(), loadFuelLogs(), loadLeaveRequests()
   ]);
   state.loading = false; render();
 }
@@ -1115,6 +1172,7 @@ function buildApp() {
   ${state.showStoreSetup ? buildStoreSetupModal() : ''}
   ${state.showNewRepair ? buildNewRepairModal() : ''}
   ${state.showNewStaff ? buildStaffModal() : ''}
+  ${state.showLeaveRequest ? buildLeaveRequestModal() : ''}
   ${state.showFuelLog ? buildFuelLogModal() : ''}
   ${state.showEditTask ? buildEditTaskModal() : ''}
   ${state.showAssetLog ? buildAssetLogModal() : ''}
@@ -2272,18 +2330,23 @@ function buildFuel() {
 // STAFF
 // ═══════════════════════════════════════
 function buildStaff() {
-  const ROLES = ['General Manager','Farm Manager','Lodge Manager','Conservation Manager','Maintenance Supervisor','Head Guide','Senior Guide','Guide','Head Chef','Sous Chef','Chef','Head Housekeeper','Housekeeper','Butler','Head Barman','Barman','Spa Therapist','Administrator','Security','Farm Hand','General Worker'];
-  const DEPTS = ['Management','Conservation','Maintenance','Kitchen','Housekeeping','Bar','Guide','Spa','Farm','Security','Administration'];
-  const CYCLES = ['Mon-Fri','3 weeks on / 1 week off','6 weeks on / 2 weeks off','Shift rotation','Live-in permanent'];
-  const TYPES = ['permanent','casual','contractor','seasonal'];
+  const view = state.staffView || 'register';
+
+  if (view === 'calendar') return buildLeaveCalendar();
+  if (view === 'leave') return buildLeaveManagement();
 
   const active   = state.staff.filter(s => s.is_active !== false);
   const inactive = state.staff.filter(s => s.is_active === false);
   const filter   = state.staffFilter || 'all';
   const filtered = filter === 'all' ? active : active.filter(s => s.department === filter);
-
+  const DEPTS    = ['Management','Conservation','Maintenance','Kitchen','Housekeeping','Bar','Guide','Spa','Farm','Security','Administration'];
   const deptCounts = {};
-  active.forEach(s => { deptCounts[s.department] = (deptCounts[s.department]||0)+1; });
+  active.forEach(s => { if(s.department) deptCounts[s.department] = (deptCounts[s.department]||0)+1; });
+
+  // Alerts
+  const licExpiring = active.filter(s => s.license_expiry && new Date(s.license_expiry) < new Date(Date.now()+90*24*3600*1000));
+  const pdpExpiring = active.filter(s => s.pdp_expiry && new Date(s.pdp_expiry) < new Date(Date.now()+90*24*3600*1000));
+  const pendingLeave = state.leaveRequests.filter(l => l.status === 'pending');
 
   return `
   <div class="col-gap">
@@ -2295,49 +2358,77 @@ function buildStaff() {
       <button class="btn btn-primary" onclick="showModal('newStaff')">+ Add Staff Member</button>
     </div>
 
-    <div class="grid-4">
-      ${statCard('Total Staff', active.length, 'active', 'var(--accent-hi)')}
-      ${statCard('Departments', Object.keys(deptCounts).length, 'active', 'var(--sky)')}
-      ${statCard('Permanent', active.filter(s=>s.employment_type==='permanent').length, 'staff', 'var(--green)')}
-      ${statCard('Casual / Other', active.filter(s=>s.employment_type!=='permanent').length, 'staff', 'var(--savanna)')}
+    <!-- View tabs -->
+    <div class="filter-row">
+      <button class="filter-btn ${view==='register'?'active':''}" onclick="setStaffView('register')">&#9671; REGISTER</button>
+      <button class="filter-btn ${view==='calendar'?'active':''}" onclick="setStaffView('calendar')">&#9633; LEAVE CALENDAR ${pendingLeave.length>0?`<span style="background:var(--red);color:white;border-radius:10px;padding:0 5px;font-size:9px;margin-left:4px">${pendingLeave.length}</span>`:''}</button>
+      <button class="filter-btn ${view==='leave'?'active':''}" onclick="setStaffView('leave')">&#9670; LEAVE REQUESTS</button>
     </div>
+
+    <div class="grid-4">
+      ${statCard('Active Staff', active.length, 'members', 'var(--accent-hi)')}
+      ${statCard('Pending Leave', pendingLeave.length, 'requests', pendingLeave.length>0?'var(--orange)':'var(--green)')}
+      ${statCard('Licence Alerts', licExpiring.length+pdpExpiring.length, 'expiring', licExpiring.length+pdpExpiring.length>0?'var(--red)':'var(--green)')}
+      ${statCard('Departments', Object.keys(deptCounts).length, 'active', 'var(--sky)')}
+    </div>
+
+    ${(licExpiring.length || pdpExpiring.length) ? `
+    <div class="card" style="border-color:color-mix(in srgb,var(--red) 40%,var(--border));background:color-mix(in srgb,var(--red) 5%,var(--dark-mid))">
+      <div class="card-title" style="color:var(--red)">&#8855; Document Expiry Alerts</div>
+      ${licExpiring.map(s=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:color-mix(in srgb,var(--red) 8%,transparent);border-radius:var(--r);margin-bottom:4px">
+          <span style="font-size:13px;color:var(--text);font-weight:600">${escHtml(s.name)} — Driver's Licence</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--red)">Expires ${fmtDate(s.license_expiry)}</span>
+        </div>`).join('')}
+      ${pdpExpiring.map(s=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:color-mix(in srgb,var(--orange) 8%,transparent);border-radius:var(--r);margin-bottom:4px">
+          <span style="font-size:13px;color:var(--text);font-weight:600">${escHtml(s.name)} — PDP</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--orange)">Expires ${fmtDate(s.pdp_expiry)}</span>
+        </div>`).join('')}
+    </div>` : ''}
 
     <!-- Dept filter -->
     <div class="filter-row" style="flex-wrap:wrap">
       <button class="filter-btn ${filter==='all'?'active':''}" onclick="setStaffFilter('all')">ALL (${active.length})</button>
       ${DEPTS.filter(d => deptCounts[d]).map(d =>
-        `<button class="filter-btn ${filter===d?'active':''}" onclick="setStaffFilter('${d}')">${d.toUpperCase()} (${deptCounts[d]||0})</button>`
+        `<button class="filter-btn ${filter===d?'active':''}" onclick="setStaffFilter('${d}')">${d.toUpperCase()} (${deptCounts[d]})</button>`
       ).join('')}
     </div>
 
     <!-- Staff cards -->
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">
       ${filtered.length ? filtered.map(s => {
-        const initials = s.name.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase();
-        const hasCerts = s.certifications;
+        const initials = (s.name||'?').split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase();
+        const pendLeave = state.leaveRequests.filter(l => l.staff_id === s.id && l.status === 'pending').length;
+        const annualLeft = Number(s.annual_leave_days||15) - Number(s.leave_days_accumulated||0);
         return `
         <div class="card" style="cursor:pointer" onclick="openEditStaff(${s.id})">
           <div style="display:flex;align-items:flex-start;gap:12px">
-            <div style="width:42px;height:42px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:var(--dark);flex-shrink:0">${initials}</div>
+            <div style="width:44px;height:44px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:var(--dark);flex-shrink:0">${escHtml(initials)}</div>
             <div style="flex:1;min-width:0">
-              <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:2px">${escHtml(s.name)}</div>
-              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent)">${escHtml(s.role||'—')}</div>
-              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">
+              <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:1px">${escHtml(s.name)}${s.surname?' '+escHtml(s.surname):''}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent);margin-bottom:3px">${escHtml(s.role||'—')}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);display:flex;gap:8px;flex-wrap:wrap">
                 ${s.department?`<span>${escHtml(s.department)}</span>`:''}
                 ${s.employment_type?`<span>${escHtml(s.employment_type)}</span>`:''}
                 ${s.work_cycle?`<span>${escHtml(s.work_cycle)}</span>`:''}
               </div>
-              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-top:3px;display:flex;gap:10px">
                 ${s.phone?`<span>&#128222; ${escHtml(s.phone)}</span>`:''}
                 ${s.employee_number?`<span>#${escHtml(s.employee_number)}</span>`:''}
               </div>
-              ${s.license_expiry && new Date(s.license_expiry) < new Date(Date.now()+90*24*3600*1000) ? `
-                <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--red);margin-top:4px">
-                  ⊗ License expires ${fmtDate(s.license_expiry)}
-                </div>` : ''}
+              <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+                <div style="flex:1;background:var(--surface-hi);border-radius:2px;height:3px">
+                  <div style="height:100%;width:${Math.min((Number(s.leave_days_accumulated||0)/Number(s.annual_leave_days||15))*100,100)}%;background:var(--savanna);border-radius:2px"></div>
+                </div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--savanna);white-space:nowrap">${Number(s.leave_days_accumulated||0)}/${s.annual_leave_days||15} days used</span>
+              </div>
+              ${pendLeave>0?`<div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--orange);margin-top:3px">&#9650; ${pendLeave} pending leave request${pendLeave!==1?'s':''}</div>`:''}
+              ${(s.license_expiry && new Date(s.license_expiry)<new Date(Date.now()+90*24*3600*1000)) ? `<div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--red);margin-top:3px">&#8855; Licence expires ${fmtDate(s.license_expiry)}</div>` : ''}
             </div>
-            <div>
-              <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--green);background:color-mix(in srgb,var(--green) 15%,transparent);padding:2px 7px;border-radius:3px">ACTIVE</span>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--green);background:color-mix(in srgb,var(--green) 15%,transparent);padding:2px 6px;border-radius:3px">ACTIVE</span>
+              <button onclick="event.stopPropagation();openLeaveRequest(${s.id})" class="btn btn-ghost" style="font-size:9px;padding:3px 7px;margin-top:2px">+ Leave</button>
             </div>
           </div>
         </div>`;
@@ -2346,13 +2437,186 @@ function buildStaff() {
 
     ${inactive.length ? `
     <div class="card">
-      <div class="card-title" style="color:var(--text-muted)">&#9744; Inactive Staff (${inactive.length})</div>
-      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">
-        ${inactive.map(s => escHtml(s.name)).join(', ')}
-      </div>
+      <div class="card-title" style="color:var(--text-muted)">Inactive (${inactive.length})</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">${inactive.map(s=>escHtml(s.name)).join(', ')}</div>
     </div>` : ''}
   </div>`;
 }
+
+function buildLeaveCalendar() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const firstDay = new Date(year, month, 1).getDay();
+
+  // Group approved + pending leave by staff for this month
+  const thisMonthStart = `${year}-${String(month+1).padStart(2,'0')}-01`;
+  const thisMonthEnd   = `${year}-${String(month+1).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
+
+  const monthLeave = state.leaveRequests.filter(l =>
+    l.start_date <= thisMonthEnd && l.end_date >= thisMonthStart &&
+    (l.status === 'approved' || l.status === 'pending')
+  );
+
+  const LEAVE_COLORS = {
+    annual: 'var(--green)', sick: 'var(--red)', family_responsibility: 'var(--orange)',
+    unpaid: 'var(--text-muted)', study: 'var(--sky)', absent: 'var(--red)', other: 'var(--savanna)'
+  };
+
+  return `
+  <div class="col-gap">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="section-title" style="margin-bottom:0">
+        <div class="section-sub">— ${year}</div>
+        <div class="section-h">${MONTHS[month]} Leave Calendar</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" onclick="setStaffView('register')">&#8592; Back to Register</button>
+        <button class="btn btn-ghost" onclick="setStaffView('leave')">Leave Requests</button>
+      </div>
+    </div>
+
+    <!-- Legend -->
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      ${Object.entries({annual:'Annual',sick:'Sick',family_responsibility:'Family Resp.',unpaid:'Unpaid',absent:'Absent',other:'Other'}).map(([k,v])=>`
+        <div style="display:flex;align-items:center;gap:4px">
+          <div style="width:10px;height:10px;border-radius:2px;background:${LEAVE_COLORS[k]||'var(--text-muted)'}"></div>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">${v}</span>
+        </div>`).join('')}
+      <div style="display:flex;align-items:center;gap:4px">
+        <div style="width:10px;height:10px;border-radius:2px;background:var(--surface-hi);border:1px dashed var(--border)"></div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">Pending</span>
+      </div>
+    </div>
+
+    <!-- Staff leave rows -->
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;min-width:700px">
+          <thead>
+            <tr style="background:var(--surface)">
+              <th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:8px 12px;text-align:left;border-bottom:2px solid var(--border);min-width:140px;position:sticky;left:0;background:var(--surface);z-index:1">STAFF MEMBER</th>
+              ${Array.from({length:daysInMonth},(_,i)=>`
+                <th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:${i+1===now.getDate()?'var(--accent)':'var(--text-muted)'};padding:6px 4px;text-align:center;border-bottom:2px solid var(--border);min-width:26px;${i+1===now.getDate()?'background:color-mix(in srgb,var(--accent) 8%,transparent)':''}">${i+1}</th>
+              `).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${state.staff.filter(s=>s.is_active!==false).map(s => {
+              const staffLeave = monthLeave.filter(l => l.staff_id === s.id);
+              return `
+              <tr style="border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
+                <td style="padding:6px 12px;font-size:12px;font-weight:600;color:var(--text);position:sticky;left:0;background:var(--dark-mid);z-index:1;white-space:nowrap">${escHtml(s.preferred_name||s.name)}</td>
+                ${Array.from({length:daysInMonth},(_,i) => {
+                  const day = i+1;
+                  const dayStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+                  const leave = staffLeave.find(l => l.start_date <= dayStr && l.end_date >= dayStr);
+                  if (leave) {
+                    const col = LEAVE_COLORS[leave.leave_type] || 'var(--savanna)';
+                    const isPending = leave.status === 'pending';
+                    return `<td style="padding:2px;background:${isPending?'transparent':col};border:${isPending?`1px dashed ${col}`:''};border-radius:2px;text-align:center">
+                      <div style="width:18px;height:18px;border-radius:2px;background:${isPending?'transparent':col};border:${isPending?`2px dashed ${col}`:''};margin:0 auto" title="${leave.leave_type} (${leave.status})"></div>
+                    </td>`;
+                  }
+                  return `<td style="padding:2px;${day===now.getDate()?'background:color-mix(in srgb,var(--accent) 8%,transparent)':''}"></td>`;
+                }).join('')}
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Work cycle overview -->
+    <div class="card">
+      <div class="card-title">&#9670; Work Cycles — ${MONTHS[month]}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">
+        ${state.staff.filter(s=>s.is_active!==false&&s.work_cycle).map(s=>`
+          <div style="padding:8px 12px;background:var(--surface);border-radius:var(--r);border:1px solid var(--border)">
+            <div style="font-size:12px;font-weight:600;color:var(--text)">${escHtml(s.preferred_name||s.name)}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);margin-top:2px">${escHtml(s.work_cycle)}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--savanna);margin-top:2px">${Number(s.leave_days_accumulated||0)} / ${s.annual_leave_days||15} days leave used</div>
+          </div>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildLeaveManagement() {
+  const pending  = state.leaveRequests.filter(l => l.status === 'pending');
+  const approved = state.leaveRequests.filter(l => l.status === 'approved');
+  const all = state.leaveRequests;
+  const LEAVE_TYPES = ['annual','sick','family_responsibility','unpaid','study','absent','other'];
+
+  return `
+  <div class="col-gap">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="section-title" style="margin-bottom:0">
+        <div class="section-sub">— HR</div>
+        <div class="section-h">Leave Management</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" onclick="setStaffView('register')">&#8592; Back</button>
+        <button class="btn btn-ghost" onclick="setStaffView('calendar')">View Calendar</button>
+        <button class="btn btn-primary" onclick="openLeaveRequest(null)">+ Log Leave</button>
+      </div>
+    </div>
+
+    ${pending.length ? `
+    <div class="card" style="border-color:color-mix(in srgb,var(--orange) 40%,var(--border))">
+      <div class="card-title" style="color:var(--orange)">&#9650; Pending Approval (${pending.length})</div>
+      <div class="col-gap" style="gap:6px">
+        ${pending.map(l => {
+          const s = state.staff.find(x => x.id === l.staff_id);
+          return `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--surface);border-radius:var(--r);border:1px solid var(--border)">
+            <div>
+              <div style="font-weight:700;font-size:13px;color:var(--text)">${escHtml(l.staff_name||'Staff')} — ${(l.leave_type||'').replace(/_/g,' ').replace(/\w/g,x=>x.toUpperCase())}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">${fmtDate(l.start_date)} to ${fmtDate(l.end_date)} (${l.days_requested||'?'} days) ${l.reason?'· '+escHtml(l.reason):''}</div>
+            </div>
+            <div style="display:flex;gap:6px;flex-shrink:0;margin-left:12px">
+              <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px;color:var(--green);border-color:var(--green)" onclick="approveLeave(${l.id})">&#10003; Approve</button>
+              <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px;color:var(--red);border-color:var(--red)" onclick="rejectLeave(${l.id})">&#10005; Decline</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : `<div class="card" style="border-color:color-mix(in srgb,var(--green) 30%,var(--border))"><div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--green)">&#10003; No pending leave requests</div></div>`}
+
+    <!-- All leave -->
+    <div class="card">
+      <div class="card-title">&#9671; All Leave Records</div>
+      ${all.length ? `
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:var(--surface)">
+              ${['STAFF','TYPE','FROM','TO','DAYS','STATUS','APPROVED BY'].map(h=>`<th style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-muted);padding:7px 10px;text-align:left;border-bottom:2px solid var(--border)">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${all.slice(0,50).map(l=>{
+              const sCol = l.status==='approved'?'var(--green)':l.status==='pending'?'var(--orange)':'var(--red)';
+              return `
+              <tr style="border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
+                <td style="padding:6px 10px;font-weight:600;color:var(--text)">${escHtml(l.staff_name||'—')}</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px">${(l.leave_type||'').replace(/_/g,' ')}</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px">${fmtDate(l.start_date)}</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px">${fmtDate(l.end_date)}</td>
+                <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px;text-align:center">${l.days_requested||'—'}</td>
+                <td style="padding:6px 10px"><span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:${sCol};background:color-mix(in srgb,${sCol} 15%,transparent);padding:2px 7px;border-radius:3px">${(l.status||'').toUpperCase()}</span></td>
+                <td style="padding:6px 10px;font-size:10px;color:var(--text-muted)">${escHtml(l.approved_by||'—')}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>` : `<div class="empty" style="padding:16px 0">No leave records yet</div>`}
+    </div>
+  </div>`;
+}
+
 
 // ═══════════════════════════════════════
 // REPAIRS — OFF-SITE TRACKING
@@ -3302,26 +3566,65 @@ function buildEditTaskModal() {
 
 function buildStaffModal() {
   const editing = state.editingStaffId ? state.staff.find(s => s.id === state.editingStaffId) : null;
-  const v = (f, fb='') => editing ? (editing[f]!==null&&editing[f]!==undefined ? editing[f] : fb) : fb;
+  const v = (f, fb='') => editing ? (editing[f]!==null&&editing[f]!==undefined ? String(editing[f]) : fb) : fb;
   const ROLES = ['General Manager','Farm Manager','Lodge Manager','Conservation Manager','Maintenance Supervisor','Head Guide','Senior Guide','Guide','Head Chef','Sous Chef','Chef','Head Housekeeper','Housekeeper','Butler','Head Barman','Barman','Spa Therapist','Administrator','Security','Farm Hand','General Worker','Other'];
   const DEPTS = ['Management','Conservation','Maintenance','Kitchen','Housekeeping','Bar','Guide','Spa','Farm','Security','Administration'];
+  const section = (title) => `<div style="border-top:1px solid var(--border);margin:14px 0 10px;padding-top:12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px">${title}</div>`;
 
   return `
   <div class="modal-overlay" onclick="if(event.target===this)closeModal('newStaff')">
-    <div class="modal" style="width:620px;max-height:92vh;overflow-y:auto">
-      <div class="modal-title">&#9671; ${editing?'Edit Staff Member':'Add Staff Member'}</div>
+    <div class="modal" style="width:660px;max-height:92vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div class="modal-title" style="margin:0">&#9671; ${editing?'Edit':'Add'} Staff Member</div>
+        ${!editing ? `<div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">WhatsApp onboarding link will be sent on save</div>` : ''}
+      </div>
 
-      <!-- Basic info -->
-      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">BASIC INFORMATION</div>
+      ${section('PERSONAL DETAILS')}
       <div class="form-row">
-        <div class="form-group" style="flex:2"><label class="form-label">Full Name *</label>
-          <input class="form-input" id="st-name" value="${escHtml(v('name'))}" placeholder="Full name">
+        <div class="form-group" style="flex:2"><label class="form-label">First Name *</label>
+          <input class="form-input" id="st-name" value="${v('name')}" placeholder="First name">
         </div>
-        <div class="form-group"><label class="form-label">Employee #</label>
-          <input class="form-input" id="st-empno" value="${escHtml(v('employee_number'))}" placeholder="EMP001">
+        <div class="form-group" style="flex:2"><label class="form-label">Surname</label>
+          <input class="form-input" id="st-surname" value="${v('surname')}" placeholder="Surname">
+        </div>
+        <div class="form-group"><label class="form-label">Preferred Name</label>
+          <input class="form-input" id="st-preferred" value="${v('preferred_name')}" placeholder="Goes by...">
         </div>
       </div>
       <div class="form-row">
+        <div class="form-group"><label class="form-label">Date of Birth</label>
+          <input class="form-input" id="st-dob" type="date" value="${v('date_of_birth')}">
+        </div>
+        <div class="form-group"><label class="form-label">Gender</label>
+          <select class="form-select" id="st-gender">
+            <option value="">—</option>
+            ${['Male','Female','Other','Prefer not to say'].map(g=>`<option value="${g}" ${v('gender')===g?'selected':''}>${g}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Home Language</label>
+          <input class="form-input" id="st-lang" value="${v('home_language')}" placeholder="e.g. Zulu, English">
+        </div>
+        <div class="form-group"><label class="form-label">Nationality</label>
+          <input class="form-input" id="st-nationality" value="${v('nationality')}" placeholder="e.g. South African">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">ID Number</label>
+          <input class="form-input" id="st-id" value="${v('id_number')}" placeholder="SA ID number">
+        </div>
+        <div class="form-group"><label class="form-label">Passport Number</label>
+          <input class="form-input" id="st-passport" value="${v('passport_number')}" placeholder="Passport #">
+        </div>
+        <div class="form-group"><label class="form-label">Work Permit #</label>
+          <input class="form-input" id="st-permit" value="${v('work_permit_number')}" placeholder="If applicable">
+        </div>
+      </div>
+
+      ${section('EMPLOYMENT')}
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Employee #</label>
+          <input class="form-input" id="st-empno" value="${v('employee_number')}" placeholder="EMP001">
+        </div>
         <div class="form-group"><label class="form-label">Role *</label>
           <select class="form-select" id="st-role">
             ${ROLES.map(r=>`<option value="${r}" ${v('role')===r?'selected':''}>${r}</option>`).join('')}
@@ -3335,15 +3638,18 @@ function buildStaffModal() {
         </div>
       </div>
       <div class="form-row">
+        <div class="form-group"><label class="form-label">Manager</label>
+          <input class="form-input" id="st-manager" value="${v('manager')}" placeholder="Reports to">
+        </div>
         <div class="form-group"><label class="form-label">Employment Type</label>
           <select class="form-select" id="st-type">
             ${['permanent','casual','contractor','seasonal'].map(t=>`<option value="${t}" ${v('employment_type','permanent')===t?'selected':''}>${t.charAt(0).toUpperCase()+t.slice(1)}</option>`).join('')}
           </select>
         </div>
-        <div class="form-group"><label class="form-label">Work Cycle</label>
-          <select class="form-select" id="st-cycle">
-            <option value="">— Select —</option>
-            ${['Mon-Fri','3 weeks on / 1 week off','6 weeks on / 2 weeks off','Shift rotation','Live-in permanent'].map(c=>`<option value="${c}" ${v('work_cycle')===c?'selected':''}>${c}</option>`).join('')}
+        <div class="form-group"><label class="form-label">Status</label>
+          <select class="form-select" id="st-active">
+            <option value="true" ${v('is_active','true')==='true'?'selected':''}>Active</option>
+            <option value="false" ${v('is_active','true')==='false'?'selected':''}>Inactive</option>
           </select>
         </div>
       </div>
@@ -3351,70 +3657,148 @@ function buildStaffModal() {
         <div class="form-group"><label class="form-label">Start Date</label>
           <input class="form-input" id="st-start" type="date" value="${v('start_date')}">
         </div>
-        <div class="form-group"><label class="form-label">Status</label>
-          <select class="form-select" id="st-active">
-            <option value="true" ${v('is_active',true)?'selected':''}>Active</option>
-            <option value="false" ${v('is_active',true)===false?'selected':''}>Inactive</option>
+        <div class="form-group"><label class="form-label">Work Cycle</label>
+          <select class="form-select" id="st-cycle">
+            <option value="">— Select —</option>
+            ${['Mon-Fri','3 weeks on / 1 week off','6 weeks on / 2 weeks off','Shift rotation','Live-in permanent'].map(cyc=>`<option value="${cyc}" ${v('work_cycle')===cyc?'selected':''}>${cyc}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Leave Cycle Start</label>
+          <input class="form-input" id="st-leavecycle" type="date" value="${v('leave_cycle_start')}" placeholder="When annual leave accumulation starts">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Annual Leave Days</label>
+          <input class="form-input" id="st-leavedays" type="number" value="${v('annual_leave_days','15')}" placeholder="15">
+        </div>
+        <div class="form-group"><label class="form-label">Days Accumulated</label>
+          <input class="form-input" id="st-leaveacc" type="number" step="0.5" value="${v('leave_days_accumulated','0')}" placeholder="0">
+        </div>
+      </div>
+
+      ${section('CONTACT & ADDRESS')}
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Phone (WhatsApp) *</label>
+          <input class="form-input" id="st-phone" value="${v('phone')}" placeholder="+27XXXXXXXXX">
+        </div>
+        <div class="form-group"><label class="form-label">Email</label>
+          <input class="form-input" id="st-email" value="${v('email')}" placeholder="email@...">
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Residential Address</label>
+        <input class="form-input" id="st-addr" value="${v('residential_address')}" placeholder="Street, suburb, postal code">
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Emergency Contact 1</label>
+          <input class="form-input" id="st-ec-name" value="${v('emergency_contact_name')}" placeholder="Name">
+        </div>
+        <div class="form-group"><label class="form-label">Phone</label>
+          <input class="form-input" id="st-ec-phone" value="${v('emergency_contact_phone')}" placeholder="+27...">
+        </div>
+        <div class="form-group"><label class="form-label">Relationship</label>
+          <input class="form-input" id="st-ec-rel" value="${v('emergency_contact_relation')}" placeholder="Spouse, Parent...">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Emergency Contact 2</label>
+          <input class="form-input" id="st-ec-name2" value="${v('emergency_contact_name2')}" placeholder="Name">
+        </div>
+        <div class="form-group"><label class="form-label">Phone</label>
+          <input class="form-input" id="st-ec-phone2" value="${v('emergency_contact_phone2')}" placeholder="+27...">
+        </div>
+        <div class="form-group"><label class="form-label">Relationship</label>
+          <input class="form-input" id="st-ec-rel2" value="${v('emergency_contact_relation2')}" placeholder="Sibling, Friend...">
+        </div>
+      </div>
+
+      ${section('DRIVERS LICENCE & PDP')}
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Licence Code</label>
+          <select class="form-select" id="st-liccode">
+            <option value="">— None —</option>
+            ${['A','A1','B','C','C1','EB','EC','EC1'].map(cd=>`<option value="${cd}" ${v('license_code')===cd?'selected':''}>${cd}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Licence Number</label>
+          <input class="form-input" id="st-license" value="${v('drivers_license')}" placeholder="Licence number">
+        </div>
+        <div class="form-group"><label class="form-label">Expiry Date</label>
+          <input class="form-input" id="st-licexp" type="date" value="${v('license_expiry')}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">PDP Number</label>
+          <input class="form-input" id="st-pdp" value="${v('pdp')}" placeholder="Professional Driving Permit">
+        </div>
+        <div class="form-group"><label class="form-label">PDP Expiry</label>
+          <input class="form-input" id="st-pdpexp" type="date" value="${v('pdp_expiry')}">
+        </div>
+      </div>
+
+      ${section('MEDICAL DETAILS')}
+      <div class="form-row">
+        <div class="form-group" style="flex:2"><label class="form-label">Allergies</label>
+          <input class="form-input" id="st-allergies" value="${v('allergies')}" placeholder="Food, environmental, medication allergies">
+        </div>
+        <div class="form-group" style="flex:2"><label class="form-label">Medical Conditions</label>
+          <input class="form-input" id="st-medcond" value="${v('medical_conditions')}" placeholder="Existing conditions">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Chronic Medication</label>
+          <input class="form-input" id="st-meds" value="${v('chronic_medication')}" placeholder="Regular medication">
+        </div>
+        <div class="form-group"><label class="form-label">Medical Aid</label>
+          <input class="form-input" id="st-medaid" value="${v('medical_aid')}" placeholder="Scheme name">
+        </div>
+        <div class="form-group"><label class="form-label">Medical Aid #</label>
+          <input class="form-input" id="st-medaidno" value="${v('medical_aid_number')}" placeholder="Member number">
+        </div>
+      </div>
+
+      ${section('FINANCIAL DETAILS')}
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Bank</label>
+          <input class="form-input" id="st-bank" value="${v('bank_name')}" placeholder="FNB, ABSA, Standard...">
+        </div>
+        <div class="form-group"><label class="form-label">Account Number</label>
+          <input class="form-input" id="st-acc" value="${v('bank_account')}" placeholder="Account number">
+        </div>
+        <div class="form-group"><label class="form-label">Branch Code</label>
+          <input class="form-input" id="st-branch" value="${v('bank_branch')}" placeholder="Branch code">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Tax Number</label>
+          <input class="form-input" id="st-tax" value="${v('tax_number')}" placeholder="SA tax number">
+        </div>
+        <div class="form-group"><label class="form-label">Account Type</label>
+          <select class="form-select" id="st-acctype">
+            ${['Own','Joint','Third Party'].map(t=>`<option value="${t}" ${v('bank_account_type')===t?'selected':''}>${t}</option>`).join('')}
           </select>
         </div>
       </div>
 
-      <!-- Contact -->
-      <div style="border-top:1px solid var(--border);margin:14px 0 10px;padding-top:12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px">CONTACT & IDENTIFICATION</div>
-      <div class="form-row">
-        <div class="form-group"><label class="form-label">Phone (WhatsApp) *</label>
-          <input class="form-input" id="st-phone" value="${escHtml(v('phone'))}" placeholder="+27XXXXXXXXX">
-        </div>
-        <div class="form-group"><label class="form-label">Email</label>
-          <input class="form-input" id="st-email" value="${escHtml(v('email'))}" placeholder="email@...">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group"><label class="form-label">ID Number</label>
-          <input class="form-input" id="st-id" value="${escHtml(v('id_number'))}" placeholder="SA ID number">
-        </div>
-        <div class="form-group"><label class="form-label">Driver's License</label>
-          <input class="form-input" id="st-license" value="${escHtml(v('drivers_license'))}" placeholder="Code B, C, EB...">
-        </div>
-        <div class="form-group"><label class="form-label">License Expiry</label>
-          <input class="form-input" id="st-licexp" type="date" value="${v('license_expiry')}">
-        </div>
-      </div>
-
-      <!-- Emergency contact -->
-      <div class="form-row">
-        <div class="form-group"><label class="form-label">Emergency Contact</label>
-          <input class="form-input" id="st-ec-name" value="${escHtml(v('emergency_contact_name'))}" placeholder="Name">
-        </div>
-        <div class="form-group"><label class="form-label">Emergency Phone</label>
-          <input class="form-input" id="st-ec-phone" value="${escHtml(v('emergency_contact_phone'))}" placeholder="+27...">
-        </div>
-      </div>
-
-      <!-- Banking (management only in prod — shown here for setup) -->
-      <div style="border-top:1px solid var(--border);margin:14px 0 10px;padding-top:12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px">BANKING (MANAGEMENT ONLY)</div>
-      <div class="form-row">
-        <div class="form-group"><label class="form-label">Bank</label>
-          <input class="form-input" id="st-bank" value="${escHtml(v('bank_name'))}" placeholder="FNB, ABSA, Standard...">
-        </div>
-        <div class="form-group"><label class="form-label">Account Number</label>
-          <input class="form-input" id="st-acc" value="${escHtml(v('bank_account'))}" placeholder="Account number">
-        </div>
-        <div class="form-group"><label class="form-label">Branch Code</label>
-          <input class="form-input" id="st-branch" value="${escHtml(v('bank_branch'))}" placeholder="Branch code">
-        </div>
-      </div>
-
-      <!-- Issued items + notes -->
-      <div style="border-top:1px solid var(--border);margin:14px 0 10px;padding-top:12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px">ISSUED ITEMS & CERTIFICATIONS</div>
-      <div class="form-group"><label class="form-label">Issued Items</label>
-        <input class="form-input" id="st-issued" value="${escHtml(v('issued_items'))}" placeholder="Uniform, radio, keys, boots — comma separated">
+      ${section('SKILLS & QUALIFICATIONS')}
+      <div class="form-group"><label class="form-label">Qualifications</label>
+        <input class="form-input" id="st-quals" value="${v('qualifications')}" placeholder="Formal qualifications — degree, diploma, certificates...">
       </div>
       <div class="form-group"><label class="form-label">Certifications / Training</label>
-        <input class="form-input" id="st-certs" value="${escHtml(v('certifications'))}" placeholder="First Aid, Chainsaw, PDP — comma separated">
+        <input class="form-input" id="st-certs" value="${v('certifications')}" placeholder="First Aid, Chainsaw, FGASA, PDP, Firearm — comma separated">
+      </div>
+      <div class="form-group"><label class="form-label">Skills</label>
+        <input class="form-input" id="st-skills" value="${v('skills')}" placeholder="Languages, technical skills, special abilities...">
+      </div>
+
+      ${section('ISSUED ITEMS & NOTES')}
+      <div class="form-group"><label class="form-label">Issued Items</label>
+        <input class="form-input" id="st-issued" value="${v('issued_items')}" placeholder="Uniform (size), radio, keys, boots (size) — comma separated">
+      </div>
+      <div class="form-group"><label class="form-label">Favourite Animal</label>
+        <input class="form-input" id="st-animal" value="${v('favourite_animal')}" placeholder="A nice touch from the onboarding form!">
       </div>
       <div class="form-group"><label class="form-label">Notes</label>
-        <textarea class="form-textarea" id="st-notes" style="height:60px">${escHtml(v('notes'))}</textarea>
+        <textarea class="form-textarea" id="st-notes" style="height:60px">${v('notes')}</textarea>
       </div>
 
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
@@ -3424,6 +3808,7 @@ function buildStaffModal() {
     </div>
   </div>`;
 }
+
 
 function buildFuelLogModal() {
   const selId = state.selectedFuelAsset;
@@ -3493,6 +3878,61 @@ function buildFuelLogModal() {
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
         <button class="btn btn-ghost" onclick="closeModal('fuelLog')">Cancel</button>
         <button class="btn btn-primary" onclick="submitFuelLog()">Save Fuel Log</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildLeaveRequestModal() {
+  const selId = state.selectedLeaveStaff;
+  const LEAVE_TYPES = ['annual','sick','family_responsibility','unpaid','study','absent','other'];
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal('leaveRequest')">
+    <div class="modal" style="width:480px">
+      <div class="modal-title">&#9670; Log Leave Request</div>
+      <div class="form-group"><label class="form-label">Staff Member *</label>
+        <select class="form-select" id="lr-staff">
+          <option value="">— Select staff member —</option>
+          ${state.staff.filter(s=>s.is_active!==false).map(s=>
+            `<option value="${s.id}" data-name="${escHtml(s.name+(s.surname?' '+s.surname:''))}" ${s.id===selId?'selected':''}>${escHtml(s.name+(s.surname?' '+s.surname:''))}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Leave Type *</label>
+          <select class="form-select" id="lr-type">
+            ${LEAVE_TYPES.map(t=>`<option value="${t}">${t.replace(/_/g,' ').replace(/\w/g,x=>x.toUpperCase())}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Status</label>
+          <select class="form-select" id="lr-status">
+            <option value="pending">Pending Approval</option>
+            <option value="approved">Approved</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">From *</label>
+          <input class="form-input" id="lr-start" type="date" oninput="calcLeaveDays()">
+        </div>
+        <div class="form-group"><label class="form-label">To *</label>
+          <input class="form-input" id="lr-end" type="date" oninput="calcLeaveDays()">
+        </div>
+        <div class="form-group"><label class="form-label">Days</label>
+          <input class="form-input" id="lr-days" type="number" step="0.5" placeholder="Auto">
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Reason</label>
+        <input class="form-input" id="lr-reason" placeholder="Optional reason or notes">
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Approved By</label>
+          <input class="form-input" id="lr-by" placeholder="Manager name (if approved)">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
+        <button class="btn btn-ghost" onclick="closeModal('leaveRequest')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitLeaveRequest()">Save Leave</button>
       </div>
     </div>
   </div>`;
@@ -4248,6 +4688,7 @@ window.showModal = (name) => {
   if(name==='storeSetup') state.showStoreSetup = true;
   if(name==='newRepair') state.showNewRepair = true;
   if(name==='newStaff') { state.showNewStaff = true; }
+  if(name==='leaveRequest') state.showLeaveRequest = true;
   if(name==='fuelLog') state.showFuelLog = true;
   if(name==='editTask') state.showEditTask = true;
   if(name==='assetLog') state.showAssetLog = true;
@@ -4274,6 +4715,7 @@ window.closeModal = (name) => {
   if(name==='storeSetup') state.showStoreSetup = false;
   if(name==='newRepair') state.showNewRepair = false;
   if(name==='newStaff') { state.showNewStaff = false; state.editingStaffId = null; }
+  if(name==='leaveRequest') { state.showLeaveRequest = false; state.selectedLeaveStaff = null; }
   if(name==='fuelLog') { state.showFuelLog = false; state.selectedFuelAsset = null; }
   if(name==='editTask') { state.showEditTask = false; state.editingTaskId = null; }
   if(name==='assetLog') { state.showAssetLog = false; }
@@ -4614,6 +5056,73 @@ window.deleteStoreLocation = async (id) => {
 };
 
 window.setStaffFilter = (f) => { state.staffFilter = f; render(); };
+window.setStaffView = (v) => { state.staffView = v; render(); };
+window.openLeaveRequest = (staffId) => { state.selectedLeaveStaff = staffId; state.showLeaveRequest = true; render(); };
+
+window.calcLeaveDays = () => {
+  const s = document.getElementById('lr-start')?.value;
+  const e = document.getElementById('lr-end')?.value;
+  if (s && e) {
+    const diff = (new Date(e) - new Date(s)) / (1000*60*60*24) + 1;
+    const el = document.getElementById('lr-days');
+    if (el && diff > 0) el.value = diff;
+  }
+};
+
+window.submitLeaveRequest = async () => {
+  const staffSel = document.getElementById('lr-staff');
+  const staffId  = Number(staffSel?.value);
+  const staffName = staffSel?.options[staffSel.selectedIndex]?.dataset?.name || '';
+  const start = document.getElementById('lr-start')?.value;
+  const end   = document.getElementById('lr-end')?.value;
+  const type  = document.getElementById('lr-type')?.value;
+  if (!staffId || !start || !end) { toast('Staff, start and end date required','error'); return; }
+  const days = Number(document.getElementById('lr-days')?.value || 0) ||
+    Math.max(1, (new Date(end)-new Date(start))/(1000*60*60*24)+1);
+  const status = document.getElementById('lr-status')?.value || 'pending';
+  const by = document.getElementById('lr-by')?.value || null;
+  try {
+    await sb.post('leave_requests', {
+      staff_id: staffId, staff_name: staffName,
+      leave_type: type, start_date: start, end_date: end,
+      days_requested: days, status,
+      approved_by: status === 'approved' ? by : null,
+      approved_at: status === 'approved' ? new Date().toISOString() : null,
+      reason: document.getElementById('lr-reason')?.value || null,
+    });
+    if (type === 'annual' && status === 'approved') {
+      const s = state.staff.find(x => x.id === staffId);
+      if (s) await sb.patch('staff?id=eq.'+staffId, { leave_days_accumulated: Number(s.leave_days_accumulated||0) + days });
+    }
+    toast('Leave saved');
+    await Promise.allSettled([loadLeaveRequests(), loadStaff()]);
+    state.showLeaveRequest = false; state.selectedLeaveStaff = null; render();
+  } catch(e) { let m=e.message; try{const p=JSON.parse(m);m=p.message||p.error||m;}catch(_){} toast('Error: '+m,'error'); }
+};
+
+window.approveLeave = async (id) => {
+  const by = prompt('Approved by (your name):');
+  if (!by) return;
+  const l = state.leaveRequests.find(x => x.id === id);
+  try {
+    await sb.patch('leave_requests?id=eq.'+id, { status:'approved', approved_by:by, approved_at:new Date().toISOString() });
+    if (l && l.leave_type==='annual') {
+      const s = state.staff.find(x => x.id === l.staff_id);
+      if (s) await sb.patch('staff?id=eq.'+l.staff_id, { leave_days_accumulated: Number(s.leave_days_accumulated||0) + Number(l.days_requested||0) });
+    }
+    toast('Leave approved');
+    await Promise.allSettled([loadLeaveRequests(), loadStaff()]); render();
+  } catch(e) { toast('Error approving leave','error'); }
+};
+
+window.rejectLeave = async (id) => {
+  if (!confirm('Decline this leave request?')) return;
+  try {
+    await sb.patch('leave_requests?id=eq.'+id, { status:'declined' });
+    toast('Leave declined');
+    await loadLeaveRequests(); render();
+  } catch(e) { toast('Error','error'); }
+};
 window.setFuelFilter = (f) => { state.fuelAssetFilter = f; render(); };
 window.openFuelLog = (assetId) => { state.selectedFuelAsset = assetId; state.showFuelLog = true; render(); };
 window.openEditStaff = (id) => { state.editingStaffId = id; state.showNewStaff = true; render(); };
@@ -4689,24 +5198,54 @@ window.submitStaff = async () => {
   if (!name) { toast('Name required','error'); return; }
   const data = {
     name, role,
+    surname: document.getElementById('st-surname')?.value || null,
+    preferred_name: document.getElementById('st-preferred')?.value || null,
+    date_of_birth: document.getElementById('st-dob')?.value || null,
+    gender: document.getElementById('st-gender')?.value || null,
+    home_language: document.getElementById('st-lang')?.value || null,
+    nationality: document.getElementById('st-nationality')?.value || null,
+    id_number: document.getElementById('st-id')?.value || null,
+    passport_number: document.getElementById('st-passport')?.value || null,
+    work_permit_number: document.getElementById('st-permit')?.value || null,
     employee_number: document.getElementById('st-empno')?.value || null,
     department: document.getElementById('st-dept')?.value || null,
+    manager: document.getElementById('st-manager')?.value || null,
     employment_type: document.getElementById('st-type')?.value || 'permanent',
     work_cycle: document.getElementById('st-cycle')?.value || null,
     start_date: document.getElementById('st-start')?.value || null,
+    leave_cycle_start: document.getElementById('st-leavecycle')?.value || null,
+    annual_leave_days: Number(document.getElementById('st-leavedays')?.value || 15),
+    leave_days_accumulated: Number(document.getElementById('st-leaveacc')?.value || 0),
     is_active: document.getElementById('st-active')?.value !== 'false',
     phone: document.getElementById('st-phone')?.value || null,
     email: document.getElementById('st-email')?.value || null,
-    id_number: document.getElementById('st-id')?.value || null,
-    drivers_license: document.getElementById('st-license')?.value || null,
-    license_expiry: document.getElementById('st-licexp')?.value || null,
+    residential_address: document.getElementById('st-addr')?.value || null,
     emergency_contact_name: document.getElementById('st-ec-name')?.value || null,
     emergency_contact_phone: document.getElementById('st-ec-phone')?.value || null,
+    emergency_contact_relation: document.getElementById('st-ec-rel')?.value || null,
+    emergency_contact_name2: document.getElementById('st-ec-name2')?.value || null,
+    emergency_contact_phone2: document.getElementById('st-ec-phone2')?.value || null,
+    emergency_contact_relation2: document.getElementById('st-ec-rel2')?.value || null,
     bank_name: document.getElementById('st-bank')?.value || null,
     bank_account: document.getElementById('st-acc')?.value || null,
     bank_branch: document.getElementById('st-branch')?.value || null,
-    issued_items: document.getElementById('st-issued')?.value || null,
+    bank_account_type: document.getElementById('st-acctype')?.value || null,
+    tax_number: document.getElementById('st-tax')?.value || null,
+    license_code: document.getElementById('st-liccode')?.value || null,
+    drivers_license: document.getElementById('st-license')?.value || null,
+    license_expiry: document.getElementById('st-licexp')?.value || null,
+    pdp: document.getElementById('st-pdp')?.value || null,
+    pdp_expiry: document.getElementById('st-pdpexp')?.value || null,
+    medical_aid: document.getElementById('st-medaid')?.value || null,
+    medical_aid_number: document.getElementById('st-medaidno')?.value || null,
+    allergies: document.getElementById('st-allergies')?.value || null,
+    medical_conditions: document.getElementById('st-medcond')?.value || null,
+    chronic_medication: document.getElementById('st-meds')?.value || null,
+    qualifications: document.getElementById('st-quals')?.value || null,
     certifications: document.getElementById('st-certs')?.value || null,
+    skills: document.getElementById('st-skills')?.value || null,
+    issued_items: document.getElementById('st-issued')?.value || null,
+    favourite_animal: document.getElementById('st-animal')?.value || null,
     notes: document.getElementById('st-notes')?.value || null,
   };
   try {
