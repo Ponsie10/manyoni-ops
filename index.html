@@ -857,6 +857,9 @@ async function loadReconItems(reconId) {
 
 async function loadAll() {
   state.loading = true; render();
+  // Check DB is reachable first
+  const ready = await initDB();
+  if (!ready) { state.loading = false; render(); return; }
   // Run all loaders independently so one failing table never blocks the rest
   await Promise.allSettled([
     loadTasks(), loadAssets(), loadAssetLogs(), loadObs(), loadChemicals(), loadTaskLogs(),
